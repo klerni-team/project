@@ -1,6 +1,11 @@
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import '@astryxdesign/core/reset.css';
+// Heading font, self-hosted so it is precached for offline use.
+import '@fontsource/lora/latin-600.css';
+import '@fontsource/lora/cyrillic-600.css';
+import '@fontsource/lora/latin-700.css';
+import '@fontsource/lora/cyrillic-700.css';
 import './index.css';
 import {Theme} from '@astryxdesign/core/theme';
 import {matchaTheme} from './themes/matcha/matchaTheme';

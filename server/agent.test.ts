@@ -1,5 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import {mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {createServer, type Server} from 'node:http';
 import type {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
@@ -205,6 +205,18 @@ describe('http', () => {
     expect(after.rev).toBe(0);
   });
 
+  it('restoring an older file under the same server gives a new epoch', async () => {
+    await start(null);
+    await sync(0, upsertTask(emptyState(), task()));
+    const backup = await readFile(join(dir, 'state.json'), 'utf8');
+    const ahead = await sync(0, upsertTask(emptyState(), task({id: 't2'})));
+    // Restore = stop, put the old file back, start.
+    await writeFile(join(dir, 'state.json'), backup);
+    await start(null);
+    const after = await sync(ahead.rev, upsertTask(emptyState(), task({id: 't3'})));
+    expect(after.epoch).not.toBe(ahead.epoch);
+  });
+
   it('locks out by the proxy-appended (rightmost) forwarded address', async () => {
     if (server) await new Promise(r => server!.close(r));
     storage = new Storage(dir);
@@ -229,6 +241,7 @@ describe('http', () => {
     await new Promise<void>(r => server!.listen(0, '127.0.0.1', r));
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     expect((await fetch(`${base}/assets/gone-123.js`)).status).toBe(404);
+    expect((await fetch(`${base}/%E0%A4%A`)).status).toBe(404);
     expect((await fetch(`${base}/habits`)).status).toBe(200);
     await rm(dist, {recursive: true, force: true});
   });

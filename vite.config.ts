@@ -22,15 +22,19 @@ function serviceWorker(): Plugin {
     closeBundle: {
       order: 'post',
       handler() {
-        // Install-icon PNGs are only read by the OS at install time.
+        // Install-icon PNGs are only read by the OS at install time; .woff is
+        // a fallback no supported browser needs next to .woff2.
         const skip = (f: string) =>
-          f === '/index.html' || f === '/sw.js' || f.endsWith('.map') || /icon-(192|512)/.test(f);
+          f === '/index.html' || f === '/sw.js' || f.endsWith('.map') || f.endsWith('.woff') || /icon-(192|512)/.test(f);
         const files = readdirSync(dir, {recursive: true, withFileTypes: true})
           .filter(e => e.isFile())
           .map(e => '/' + relative(dir, join(e.parentPath, e.name)).split(sep).join('/'))
           .filter(f => !skip(f))
           .sort();
-        const version = createHash('sha256').update(files.join('\n')).digest('hex').slice(0, 12);
+        // Hash contents, not names: an edited icon or manifest keeps its name.
+        const hash = createHash('sha256');
+        for (const f of ['/index.html', ...files]) hash.update(f).update(readFileSync(join(dir, f)));
+        const version = hash.digest('hex').slice(0, 12);
         const source = readFileSync(new URL('./sw/sw.js', import.meta.url), 'utf8')
           .replace("'habits-__VERSION__'", `'habits-${version}'`)
           .replace('= __PRECACHE__;', `= ${JSON.stringify(files)};`);

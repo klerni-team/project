@@ -27,7 +27,7 @@ const SUGGESTIONS: {label: string; prompt: string}[] = [
 
 export function Agent({draft, onDraftConsumed}: {draft: string; onDraftConsumed: () => void}) {
   const {password} = useStore();
-  const {turns, pending, error, retryText, send: sendChat, clear} = useChat();
+  const {turns, pending, error, retryText, clearRetry, send: sendChat, clear} = useChat();
   const [input, setInput] = useState(draft);
 
   useEffect(() => {
@@ -37,10 +37,13 @@ export function Agent({draft, onDraftConsumed}: {draft: string; onDraftConsumed:
     }
   }, [draft, onDraftConsumed]);
 
-  // A failed send puts its text back so it can be resent as is.
+  // A failed send puts its text back once so it can be resent as is; a
+  // draft handed over from another screen takes priority.
   useEffect(() => {
-    if (retryText) setInput(retryText);
-  }, [retryText]);
+    if (!retryText) return;
+    if (!draft) setInput(retryText);
+    clearRetry();
+  }, [retryText, draft, clearRetry]);
 
   const send = (text: string) => {
     if (!text.trim() || pending) return;

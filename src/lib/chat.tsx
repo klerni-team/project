@@ -13,8 +13,9 @@ interface Chat {
   turns: StoredTurn[];
   pending: boolean;
   error: string | null;
-  /** Text restored into the composer after a failed send. */
+  /** Text to put back into the composer after a failed send; read once. */
   retryText: string;
+  clearRetry: () => void;
   send: (text: string) => Promise<void>;
   clear: () => void;
 }
@@ -96,6 +97,7 @@ export function ChatProvider({children}: {children: ReactNode}) {
       error,
       retryText,
       send,
+      clearRetry: () => setRetryText(''),
       clear: () => {
         setTurns([]);
         setError(null);

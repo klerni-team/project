@@ -151,7 +151,13 @@ export function createHandler(deps: AppDeps) {
   async function serveStatic(res: ServerResponse, path: string, method: string) {
     if (!deps.staticDir || (method !== 'GET' && method !== 'HEAD')) throw new HttpError(404, 'not found');
     const root = deps.staticDir;
-    let file = normalize(join(root, decodeURIComponent(path)));
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(path);
+    } catch {
+      throw new HttpError(404, 'not found');
+    }
+    let file = normalize(join(root, decoded));
     if (file !== root && !file.startsWith(root + sep)) throw new HttpError(404, 'not found');
     let info = await stat(file).catch(() => null);
     // A missing hashed asset must 404: an HTML fallback served as a JS chunk

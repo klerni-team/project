@@ -3,7 +3,8 @@
  *
  * An earthy green theme inspired by matcha tea and natural botanicals.
  * Core palette: #3E481D, #707E46, #C0CBA9, #F0F0E0, #FFFFFF
- * Uses Lora for headings (Playwrite US Trad has no Cyrillic) and DM Sans for body text.
+ * Uses Lora for headings (Playwrite US Trad has no Cyrillic) and the system
+ * font for body text (DM Sans has no Cyrillic; SF Pro reads natively on Apple devices).
  */
 
 import {defineTheme, defineSyntaxTheme} from '@astryxdesign/core/theme';
@@ -39,9 +40,9 @@ export const matchaTheme = defineTheme({
     // base 16 / ratio 1.25 — aligned with the other themes' geometric scale.
     scale: {base: 16, ratio: 1.25},
     body: {
-      family: 'DM Sans',
+      family: '-apple-system',
       fallbacks:
-        '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+        'BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
     },
     heading: {
       family: 'Lora',

@@ -26,20 +26,11 @@ self.addEventListener('fetch', event => {
   const url = new URL(req.url);
   if (req.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
 
-  // Pages: network first so a deploy shows up on next open. Only a good
-  // response replaces the cached shell; errors (e.g. a 502 mid-deploy) fall
-  // back to the last good copy.
+  // Pages: the shell is served from cache, so the app opens instantly even
+  // on a weak connection. A deploy changes this file, which installs a new
+  // worker with a fresh shell; the next launch picks it up.
   if (req.mode === 'navigate') {
-    event.respondWith(
-      fetch(req)
-        .then(async res => {
-          if (!res.ok) return (await caches.match('/')) ?? res;
-          const copy = res.clone();
-          caches.open(CACHE).then(c => c.put('/', copy));
-          return res;
-        })
-        .catch(async () => (await caches.match('/')) ?? Response.error()),
-    );
+    event.respondWith(caches.match('/').then(hit => hit || fetch(req)));
     return;
   }
 
