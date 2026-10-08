@@ -41,6 +41,7 @@ type Input = Record<string, unknown>;
 const DATE = {type: 'string', description: 'Date as YYYY-MM-DD.'} as const;
 const TIME = {type: 'string', description: 'Local start time as HH:MM (24h).'} as const;
 const DURATION = {type: 'integer', minimum: 5, maximum: 720, description: 'Length in minutes.'} as const;
+const DURATION_EDIT = {type: 'integer', minimum: 0, maximum: 720, description: 'Length in minutes, or 0 to remove it.'} as const;
 const DAYS = {
   type: 'array',
   items: {type: 'integer', minimum: 0, maximum: 6},
@@ -80,7 +81,7 @@ export const TOOL_DEFS: Anthropic.Beta.BetaTool[] = [
   {
     name: 'update_task',
     description:
-      'Changes an existing task: reschedule (date/time), rename, set duration, mark done or not done. Pass time as an empty string to make it unscheduled.',
+      'Changes an existing task: reschedule (date/time), rename, set or clear duration and notes, mark done or not done. Pass time as an empty string to make it unscheduled.',
     input_schema: {
       type: 'object',
       properties: {
@@ -88,9 +89,9 @@ export const TOOL_DEFS: Anthropic.Beta.BetaTool[] = [
         title: {type: 'string'},
         date: DATE,
         time: {type: 'string', description: 'HH:MM, or "" to remove the time.'},
-        duration_min: DURATION,
+        duration_min: DURATION_EDIT,
         done: {type: 'boolean'},
-        notes: {type: 'string'},
+        notes: {type: 'string', description: 'New notes, or "" to remove them.'},
       },
       required: ['id'],
       additionalProperties: false,
@@ -128,7 +129,7 @@ export const TOOL_DEFS: Anthropic.Beta.BetaTool[] = [
         emoji: {type: 'string'},
         days: DAYS,
         time: {type: 'string', description: 'HH:MM, or "" to remove the time.'},
-        duration_min: DURATION,
+        duration_min: DURATION_EDIT,
       },
       required: ['id'],
       additionalProperties: false,
@@ -193,6 +194,11 @@ function duration(input: Input): number | undefined {
   return v as number;
 }
 
+/** For updates: 0 clears the duration. */
+function durationEdit(input: Input): number | null | undefined {
+  return input.duration_min === 0 ? null : duration(input);
+}
+
 function bool(input: Input, key: string): boolean | undefined {
   const v = input[key];
   if (v === undefined) return undefined;
@@ -221,11 +227,13 @@ function findHabit(ctx: ToolContext, id: string): Habit {
   return h;
 }
 
-/** Applies a `time` input: null clears the field, undefined keeps it. */
-function withTime<T extends {time?: string}>(rec: T, t: string | null | undefined): T {
-  if (t === undefined) return rec;
-  const {time: _old, ...rest} = rec;
-  return (t === null ? rest : {...rest, time: t}) as T;
+/** Applies an edit: a value sets the field, null removes it, undefined keeps it. */
+function withField<T extends object, K extends keyof T & string>(rec: T, key: K, v: T[K] | null | undefined): T {
+  if (v === undefined) return rec;
+  const out = {...rec};
+  if (v === null) delete out[key];
+  else out[key] = v;
+  return out;
 }
 
 const taskView = (t: Task) => ({
@@ -302,13 +310,11 @@ const handlers: Record<string, (ctx: ToolContext, input: Input) => ToolOutcome> 
     if (title) t.title = title;
     const d = date(input, 'date');
     if (d) t.date = d;
-    t = withTime(t, time(input, 'time'));
-    const dur = duration(input);
-    if (dur) t.durationMin = dur;
+    t = withField(t, 'time', time(input, 'time'));
+    t = withField(t, 'durationMin', durationEdit(input));
     const done = bool(input, 'done');
     if (done !== undefined) t.done = done;
-    const notes = str(input, 'notes', LIMITS.notes);
-    if (notes) t.notes = notes;
+    t = withField(t, 'notes', input.notes === '' ? null : str(input, 'notes', LIMITS.notes));
     ctx.state = upsertTask(ctx.state, t);
     const moved = t.date !== prev.date || t.time !== prev.time;
     const summary = moved
@@ -353,9 +359,8 @@ const handlers: Record<string, (ctx: ToolContext, input: Input) => ToolOutcome> 
     if (emoji) h.emoji = emoji;
     const ds = days(input);
     if (ds) h.days = ds;
-    h = withTime(h, time(input, 'time'));
-    const dur = duration(input);
-    if (dur) h.durationMin = dur;
+    h = withField(h, 'time', time(input, 'time'));
+    h = withField(h, 'durationMin', durationEdit(input));
     ctx.state = upsertHabit(ctx.state, h);
     return {summary: `Изменил привычку ${h.emoji} ${h.name}`, result: {id: h.id}};
   },

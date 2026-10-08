@@ -2,8 +2,8 @@ import {createHash, timingSafeEqual} from 'node:crypto';
 import {readFile, stat} from 'node:fs/promises';
 import type {IncomingMessage, ServerResponse} from 'node:http';
 import {extname, join, normalize, sep} from 'node:path';
-import {clampFuture, rebaseChanges, sanitizeState} from '../shared/state.ts';
-import {emptyState, type AgentResponse, type SyncResponse} from '../shared/types.ts';
+import {clampFuture, rebaseChanges, sanitizeState, TABLES} from '../shared/state.ts';
+import {emptyState, type AgentResponse, type BaseRecord, type SyncResponse} from '../shared/types.ts';
 import {AgentInputError, parseAgentRequest, runAgent, type MessagesClient} from './agent.ts';
 import type {Storage} from './storage.ts';
 
@@ -47,6 +47,21 @@ const MIME: Record<string, string> = {
 };
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
+
+/**
+ * Lockout bucket for an address. One IPv6 host usually owns a whole /64,
+ * so rotating within it must not reset the counter.
+ */
+export function lockoutKey(ip: string): string {
+  const v4 = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (v4) return v4[1];
+  if (!ip.includes(':')) return ip;
+  const [head, tail = ''] = ip.split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const full = [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill('0'), ...right];
+  return full.slice(0, 4).map(h => h.toLowerCase().replace(/^0+(?=.)/, '')).join(':') + '::/64';
+}
 
 function send(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, {'content-type': 'application/json', 'cache-control': 'no-store'});
@@ -99,24 +114,31 @@ export function createHandler(deps: AppDeps) {
     return result;
   }
 
+  let lastPrune = 0;
+
   function authorize(req: IncomingMessage) {
     // The proxy appends the address it saw, so the rightmost entry is the
     // one a client cannot forge (nginx keeps client-sent entries on the left).
     const forwarded = deps.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',').at(-1)!.trim() : '';
-    const ip = forwarded || req.socket.remoteAddress || '?';
+    const key = lockoutKey(forwarded || req.socket.remoteAddress || '?');
     const now = Date.now();
-    for (const [key, f] of fails) if (now - f.since > FAIL_WINDOW_MS) fails.delete(key);
-    if ((fails.get(ip)?.count ?? 0) >= MAX_FAILS) {
+    if (now - lastPrune > 60_000) {
+      lastPrune = now;
+      for (const [k, f] of fails) if (now - f.since > FAIL_WINDOW_MS) fails.delete(k);
+    }
+    const f = fails.get(key);
+    if (f && now - f.since > FAIL_WINDOW_MS) fails.delete(key);
+    if ((fails.get(key)?.count ?? 0) >= MAX_FAILS) {
       throw new HttpError(429, 'too many failed attempts, try again later');
     }
     const header = req.headers.authorization ?? '';
     const token = header.startsWith('Bearer ') ? header.slice(7) : '';
     if (!token || !timingSafeEqual(digest(token), expected)) {
-      const cur = fails.get(ip) ?? {count: 0, since: now};
-      fails.set(ip, {count: cur.count + 1, since: cur.since});
+      const cur = fails.get(key) ?? {count: 0, since: now};
+      fails.set(key, {count: cur.count + 1, since: cur.since});
       throw new HttpError(401, 'wrong password');
     }
-    fails.delete(ip);
+    fails.delete(key);
   }
 
   async function api(req: IncomingMessage, res: ServerResponse, path: string) {
@@ -128,8 +150,23 @@ export function createHandler(deps: AppDeps) {
     if (path === '/api/sync' && req.method === 'POST') {
       const body = (await readJson(req)) as {since?: unknown; changes?: unknown} | null;
       const since = typeof body?.since === 'number' && body.since >= 0 ? body.since : 0;
-      await deps.storage.merge(clampFuture(sanitizeState(body?.changes), Date.now()));
-      const out: SyncResponse = await deps.storage.changesSince(since);
+      const sent = sanitizeState(body?.changes);
+      await deps.storage.merge(clampFuture(sent, Date.now()));
+      const {epoch, rev, changes} = await deps.storage.changesSince(since);
+      // Pushed records the server did not keep as sent (an older stamp lost
+      // to a newer copy, or a future stamp was clamped): the device must
+      // adopt the server's copy or it would keep showing its own forever.
+      const current = await deps.storage.read();
+      const corrected = emptyState();
+      for (const t of TABLES) {
+        for (const [id, rec] of Object.entries(sent[t] as Record<string, BaseRecord>)) {
+          const kept = (current[t] as Record<string, BaseRecord>)[id];
+          if (kept && JSON.stringify(kept) !== JSON.stringify(rec)) {
+            (corrected[t] as Record<string, BaseRecord>)[id] = kept;
+          }
+        }
+      }
+      const out: SyncResponse = {epoch, rev, changes, corrected};
       return send(res, 200, out);
     }
 

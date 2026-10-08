@@ -71,6 +71,11 @@ export interface SyncResponse {
   epoch: string;
   rev: number;
   changes: AppState;
+  /**
+   * The server's copy of pushed records it did not keep as sent. The
+   * device replaces its own copy if it has not edited the record since.
+   */
+  corrected: AppState;
 }
 
 /** Body of `POST /api/agent`. */

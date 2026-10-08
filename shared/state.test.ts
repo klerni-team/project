@@ -1,6 +1,8 @@
 import {describe, expect, it} from 'vitest';
 import {addDays, isISODate, startOfWeek, weekdayOf} from './dates.ts';
 import {
+  adoptCorrections,
+  nextStamp,
   changedSince,
   checkId,
   clampFuture,
@@ -193,5 +195,23 @@ describe('habit start date', () => {
     expect(completionRate(s, s.habits.h1, '2026-09-25', '2026-10-08')).toBe(1);
     expect(dayProgress(s, '2026-10-07')).toEqual({done: 0, total: 0});
     expect(currentStreak(s, s.habits.h1, '2026-10-08')).toBe(1);
+  });
+});
+
+describe('stamps and corrections', () => {
+  it('nextStamp never goes below the previous stamp', () => {
+    expect(nextStamp({updatedAt: 5000}, 1000)).toBe(5001);
+    expect(nextStamp({updatedAt: 10}, 1000)).toBe(1000);
+    expect(nextStamp(undefined, 1000)).toBe(1000);
+  });
+
+  it('adopts the server copy unless the device edited the record again', () => {
+    const pushed = upsertTask(upsertTask(emptyState(), task({id: 'a', updatedAt: 5})), task({id: 'b', updatedAt: 5}));
+    // After pushing, the user edited b again.
+    const cur = upsertTask(pushed, task({id: 'b', title: 'новое', updatedAt: 6}));
+    const corrected = upsertTask(upsertTask(emptyState(), task({id: 'a', title: 'сервер', updatedAt: 9})), task({id: 'b', title: 'сервер', updatedAt: 9}));
+    const out = adoptCorrections(cur, pushed, corrected);
+    expect(out.tasks.a.title).toBe('сервер');
+    expect(out.tasks.b.title).toBe('новое');
   });
 });

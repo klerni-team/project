@@ -8,7 +8,7 @@ import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {upsertTask} from '../shared/state.ts';
 import {emptyState, type AgentResponse, type AppState, type SyncResponse, type Task} from '../shared/types.ts';
 import {parseAgentRequest, runAgent, type MessagesClient} from './agent.ts';
-import {createHandler} from './http.ts';
+import {createHandler, lockoutKey} from './http.ts';
 import {Storage} from './storage.ts';
 import {runTool, ToolInputError, type ToolContext} from './tools.ts';
 
@@ -56,6 +56,14 @@ describe('tools', () => {
     expect(c.state.tasks[id].date).toBe('2026-10-09');
     expect(c.state.tasks[id].time).toBeUndefined();
     expect(moved.summary).toContain('Перенёс');
+  });
+
+  it('update_task clears notes with "" and duration with 0', () => {
+    const c = ctx(upsertTask(emptyState(), task({notes: 'старое'})));
+    runTool(c, 'update_task', {id: 't1', notes: '', duration_min: 0});
+    expect(c.state.tasks.t1.notes).toBeUndefined();
+    expect(c.state.tasks.t1.durationMin).toBeUndefined();
+    expect(c.state.tasks.t1.time).toBe('10:00');
   });
 
   it('rejects bad input with a ToolInputError the model can read', () => {
@@ -246,10 +254,20 @@ describe('http', () => {
     await rm(dist, {recursive: true, force: true});
   });
 
-  it('clamps future timestamps on sync', async () => {
+  it('clamps future timestamps on sync and returns the corrected copy', async () => {
     await start(null);
-    await sync(0, upsertTask(emptyState(), task({updatedAt: 1e308})));
+    const res = await sync(0, upsertTask(emptyState(), task({updatedAt: 1e308})));
     expect((await storage.read()).tasks.t1.updatedAt).toBeLessThan(Date.now() + 1000);
+    expect(res.corrected.tasks.t1.updatedAt).toBeLessThan(Date.now() + 1000);
+  });
+
+  it('returns the winning server copy when a push loses', async () => {
+    await start(null);
+    await sync(0, upsertTask(emptyState(), task({title: 'новое', updatedAt: 1000})));
+    const res = await sync(0, upsertTask(emptyState(), task({title: 'старое', updatedAt: 999})));
+    expect(res.corrected.tasks.t1.title).toBe('новое');
+    const ok = await sync(0, upsertTask(emptyState(), task({title: 'новее', updatedAt: 2000})));
+    expect(ok.corrected.tasks).toEqual({});
   });
 
   it('returns 503 for the agent without a key and 400 for bad bodies', async () => {
@@ -297,5 +315,15 @@ describe('http', () => {
     const body = (await (await pending).json()) as AgentResponse;
     expect(body.changes.tasks.t1).toMatchObject({date: '2026-10-09', done: true});
     expect((await storage.read()).tasks.t1).toMatchObject({date: '2026-10-09', done: true});
+  });
+});
+
+describe('lockoutKey', () => {
+  it('groups IPv6 by /64 and unwraps IPv4-mapped addresses', () => {
+    expect(lockoutKey('2001:db8:1:2:aaaa::1')).toBe('2001:db8:1:2::/64');
+    expect(lockoutKey('2001:0db8:0001:0002:ffff:1:2:3')).toBe('2001:db8:1:2::/64');
+    expect(lockoutKey('2001:db8::1')).toBe('2001:db8:0:0::/64');
+    expect(lockoutKey('::ffff:203.0.113.7')).toBe('203.0.113.7');
+    expect(lockoutKey('203.0.113.7')).toBe('203.0.113.7');
   });
 });

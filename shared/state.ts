@@ -41,6 +41,30 @@ export function mergeStates(a: AppState, b: AppState): AppState {
   };
 }
 
+/**
+ * Timestamp for a local edit: never at or below the record's current stamp,
+ * so an edit always wins over the version it was made on, even when this
+ * device's clock is behind the one that wrote that version.
+ */
+export const nextStamp = (prev?: {updatedAt: number}, now = Date.now()) =>
+  Math.max(now, (prev?.updatedAt ?? 0) + 1);
+
+/**
+ * Takes the server's copy of records it corrected, unless the device has
+ * edited them again since it pushed them.
+ */
+export function adoptCorrections(cur: AppState, pushed: AppState, corrected: AppState): AppState {
+  const out: AppState = {habits: {...cur.habits}, tasks: {...cur.tasks}, checks: {...cur.checks}};
+  for (const t of TABLES) {
+    const mine = out[t] as Record<string, BaseRecord>;
+    const sent = pushed[t] as Record<string, BaseRecord>;
+    for (const [id, rec] of Object.entries(corrected[t] as Record<string, BaseRecord>)) {
+      if (!mine[id] || !sent[id] || mine[id].updatedAt === sent[id].updatedAt) mine[id] = rec;
+    }
+  }
+  return out;
+}
+
 /** Records in `s` stamped at or after `since` (local edits not yet pushed). */
 export function changedSince(s: AppState, since: number): AppState {
   const pick = <T extends BaseRecord>(t: Record<string, T>) =>

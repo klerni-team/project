@@ -66,8 +66,11 @@ export function ChatProvider({children}: {children: ReactNode}) {
       setRetryText('');
       setPending(true);
       try {
-        // The agent reads the server copy, so push local edits first.
-        await syncNow();
+        // The agent reads the server copy, so local edits must be there first;
+        // otherwise it would plan on stale data and its edits could win.
+        if (!(await syncNow())) {
+          throw new Error('Не удалось отправить изменения на сервер — агент не запущен. Проверь связь и пароль.');
+        }
         const now = new Date();
         const res = await askAgent(password, {
           requestId,

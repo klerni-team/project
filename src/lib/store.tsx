@@ -10,12 +10,15 @@ import {
 } from 'react';
 import {toISODate} from '../../shared/dates.ts';
 import {
+  adoptCorrections,
   changedSince,
+  checkId,
   deleteHabit,
   deleteTask,
   isChecked,
   mergeStates,
   newId,
+  nextStamp,
   sanitizeState,
   setCheck,
   TABLES,
@@ -45,8 +48,8 @@ interface Store {
   password: string;
   syncStatus: SyncStatus;
   setPassword: (p: string) => void;
-  /** Push local edits and pull remote ones. Resolves when done (or failed). */
-  syncNow: () => Promise<void>;
+  /** Push local edits and pull remote ones. Resolves true when they reached the server. */
+  syncNow: () => Promise<boolean>;
   /** Folds records from the server (sync or agent) into local state. */
   applyRemote: (changes: AppState) => void;
   /** Restores a backup: its records are re-stamped so they win over newer copies. */
@@ -110,7 +113,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
   const statusRef = useRef(syncStatus);
   statusRef.current = syncStatus;
   const cursor = useRef<SyncCursor>(load(KEYS.sync, FRESH_CURSOR));
-  const inFlight = useRef<Promise<void> | null>(null);
+  const inFlight = useRef<Promise<boolean> | null>(null);
   const again = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -124,9 +127,12 @@ export function StoreProvider({children}: {children: ReactNode}) {
   const syncOnce = useCallback(async (pw: string): Promise<boolean> => {
     const snapshotAt = Date.now();
     const sent = cursor.current;
-    const res = await syncState(pw, {since: sent.rev, changes: changedSince(stateRef.current, sent.pushedAt)});
+    const pushed = changedSince(stateRef.current, sent.pushedAt);
+    const res = await syncState(pw, {since: sent.rev, changes: pushed});
     if (passwordRef.current !== pw) return false; // password changed mid-flight
-    applyRemote(res.changes);
+    setState(cur =>
+      adoptCorrections(mergeStates(cur, sanitizeState(res.changes)), pushed, sanitizeState(res.corrected)),
+    );
     // A different data set (wiped volume, new server) or a rewound one
     // (restored backup): our pushed records may be missing there.
     const reset = sent.epoch !== '' && (res.epoch !== sent.epoch || res.rev < sent.rev);
@@ -138,9 +144,9 @@ export function StoreProvider({children}: {children: ReactNode}) {
   /**
    * Pushes local edits and pulls remote ones. A call during a running sync
    * queues one more pass and resolves only after it, so a caller that
-   * awaits it knows its own edits reached the server.
+   * awaits it knows whether its own edits reached the server.
    */
-  const runSync = useCallback((): Promise<void> => {
+  const runSync = useCallback((): Promise<boolean> => {
     if (inFlight.current) {
       again.current = true;
       return inFlight.current;
@@ -149,7 +155,10 @@ export function StoreProvider({children}: {children: ReactNode}) {
       do {
         again.current = false;
         const pw = passwordRef.current;
-        if (!pw) return setSyncStatus('off');
+        if (!pw) {
+          setSyncStatus('off');
+          return false;
+        }
         setSyncStatus('syncing');
         try {
           if (await syncOnce(pw)) again.current = true;
@@ -157,9 +166,10 @@ export function StoreProvider({children}: {children: ReactNode}) {
         } catch (err) {
           const status = err instanceof ApiError ? err.status : 0;
           setSyncStatus(status === 401 ? 'auth' : status === 429 ? 'locked' : 'offline');
-          return;
+          return false;
         }
       } while (again.current);
+      return true;
     })().finally(() => {
       inFlight.current = null;
     });
@@ -217,7 +227,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
       applyRemote,
       importBackup: s => edit(cur => mergeStates(cur, restamp(s, Date.now()))),
       toggleHabit: (habitId, date) =>
-        edit(s => setCheck(s, habitId, date, !isChecked(s, habitId, date))),
+        edit(s => setCheck(s, habitId, date, !isChecked(s, habitId, date), nextStamp(s.checks[checkId(habitId, date)]))),
       // Forms own their fields; `done` and deletion may have changed elsewhere
       // while the sheet was open, so those come from the current record.
       saveTask: ({id, ...rest}) =>
@@ -228,19 +238,19 @@ export function StoreProvider({children}: {children: ReactNode}) {
             id: id ?? newId(),
             done: cur ? cur.done : rest.done,
             ...(cur?.deleted ? {deleted: true} : {}),
-            updatedAt: Date.now(),
+            updatedAt: nextStamp(cur),
           });
         }),
       toggleTask: id =>
         edit(s => {
           const t = s.tasks[id];
-          return t ? upsertTask(s, {...t, done: !t.done, updatedAt: Date.now()}) : s;
+          return t ? upsertTask(s, {...t, done: !t.done, updatedAt: nextStamp(t)}) : s;
         }),
-      removeTask: id => edit(s => deleteTask(s, id)),
+      removeTask: id => edit(s => deleteTask(s, id, nextStamp(s.tasks[id]))),
       saveHabit: ({id, ...rest}) =>
         edit(s => {
-          const now = Date.now();
           const prev = id ? s.habits[id] : undefined;
+          const now = nextStamp(prev);
           return upsertHabit(s, {
             ...rest,
             id: id ?? newId(),
@@ -250,7 +260,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
             updatedAt: now,
           });
         }),
-      removeHabit: id => edit(s => deleteHabit(s, id)),
+      removeHabit: id => edit(s => deleteHabit(s, id, nextStamp(s.habits[id]))),
       addChallenge: c =>
         edit(s => {
           const now = Date.now();
