@@ -1,6 +1,7 @@
 import {useEffect, useState} from 'react';
 import {AppShell} from '@astryxdesign/core/AppShell';
 import {Layout, LayoutContent, LayoutFooter} from '@astryxdesign/core/Layout';
+import {VStack} from '@astryxdesign/core/Stack';
 import {NavIcon} from '@astryxdesign/core/NavIcon';
 import {SideNav, SideNavHeading, SideNavItem, SideNavSection} from '@astryxdesign/core/SideNav';
 import {Tab, TabList} from '@astryxdesign/core/TabList';
@@ -93,11 +94,14 @@ export default function App() {
         }
         footer={
           <LayoutFooter hasDivider label="Разделы">
-            <TabList value={screen} onChange={v => isScreen(v) && navigate(v)} layout="fill" size="lg">
-              {NAV.map(n => (
-                <Tab key={n.id} value={n.id} label={n.label} isLabelHidden icon={<n.icon size={22} />} />
-              ))}
-            </TabList>
+            {/* Standalone iOS draws under the home indicator (viewport-fit=cover). */}
+            <VStack style={{paddingBottom: 'env(safe-area-inset-bottom)'}}>
+              <TabList value={screen} onChange={v => isScreen(v) && navigate(v)} layout="fill" size="lg">
+                {NAV.map(n => (
+                  <Tab key={n.id} value={n.id} label={n.label} isLabelHidden icon={<n.icon size={22} />} />
+                ))}
+              </TabList>
+            </VStack>
           </LayoutFooter>
         }
       />

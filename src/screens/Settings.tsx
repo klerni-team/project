@@ -10,7 +10,7 @@ import {TextInput} from '@astryxdesign/core/TextInput';
 import {toISODate} from '../../shared/dates.ts';
 import {sanitizeState} from '../../shared/state.ts';
 import {health} from '../lib/api.ts';
-import {KEYS, save} from '../lib/storage.ts';
+import {useChat} from '../lib/chat.tsx';
 import {useStore, type SyncStatus} from '../lib/store.tsx';
 
 const STATUS: Record<SyncStatus, {label: string; variant: 'success' | 'warning' | 'error' | 'neutral' | 'accent'}> = {
@@ -18,11 +18,13 @@ const STATUS: Record<SyncStatus, {label: string; variant: 'success' | 'warning' 
   syncing: {label: 'Синхронизирую…', variant: 'accent'},
   ok: {label: 'Синхронизировано', variant: 'success'},
   offline: {label: 'Сервер недоступен — данные сохранены на устройстве', variant: 'warning'},
-  auth: {label: 'Неверный пароль', variant: 'error'},
+  auth: {label: 'Неверный пароль — синхронизация на паузе', variant: 'error'},
+  locked: {label: 'Слишком много неверных паролей — подожди 10 минут', variant: 'error'},
 };
 
 export function SettingsScreen() {
-  const {state, password, setPassword, syncStatus, syncNow, replaceAll} = useStore();
+  const {state, password, setPassword, syncStatus, syncNow, importBackup} = useStore();
+  const chat = useChat();
   const [value, setValue] = useState(password);
   const [agentOn, setAgentOn] = useState<boolean | null>(null);
   const [notice, setNotice] = useState<{status: 'success' | 'error'; text: string} | null>(null);
@@ -33,7 +35,9 @@ export function SettingsScreen() {
   }, []);
 
   const connect = () => {
-    setPassword(value.trim());
+    const next = value.trim();
+    if (next !== password) setPassword(next);
+    else void syncNow();
   };
 
   const exportJson = () => {
@@ -43,7 +47,8 @@ export function SettingsScreen() {
     a.href = url;
     a.download = `habits-${toISODate(new Date())}.json`;
     a.click();
-    URL.revokeObjectURL(url);
+    // Revoking synchronously can abort the download in Safari.
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
   };
 
   const importJson = async (file: File) => {
@@ -51,7 +56,7 @@ export function SettingsScreen() {
       const next = sanitizeState(JSON.parse(await file.text()));
       const count = Object.keys(next.habits).length + Object.keys(next.tasks).length;
       if (count === 0) throw new Error('В файле нет привычек и задач');
-      replaceAll(next);
+      importBackup(next);
       setNotice({status: 'success', text: `Загружено записей: ${count}`});
     } catch (err) {
       setNotice({status: 'error', text: err instanceof Error ? err.message : 'Не удалось прочитать файл'});
@@ -85,7 +90,12 @@ export function SettingsScreen() {
                 </Text>
                 <TextInput type="password" label="Пароль сервера" value={value} onChange={setValue} onEnter={connect} width="100%" autoComplete="current-password" />
                 <HStack gap={2} vAlign="center" wrap="wrap">
-                  <Button label="Подключить" variant="primary" onClick={connect} isDisabled={!value.trim() || value.trim() === password} />
+                  <Button
+                    label="Подключить"
+                    variant="primary"
+                    onClick={connect}
+                    isDisabled={!value.trim() || (value.trim() === password && syncStatus !== 'auth' && syncStatus !== 'locked')}
+                  />
                   <Button label="Синхронизировать сейчас" onClick={() => void syncNow()} isDisabled={!password} />
                 </HStack>
                 <HStack gap={2} vAlign="center">
@@ -108,7 +118,7 @@ export function SettingsScreen() {
                     label="Очистить чат с агентом"
                     variant="ghost"
                     onClick={() => {
-                      save(KEYS.chat, []);
+                      chat.clear();
                       setNotice({status: 'success', text: 'Чат очищен'});
                     }}
                   />

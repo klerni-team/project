@@ -12,7 +12,7 @@ PWA для iPhone и MacBook: трекер привычек с челлендж�
 - **Привычки**: серии (🔥), точки за 7 дней, тепловая карта за 12 недель, челленджи из TikTok: 75 Hard, That Girl, 5 AM Club, 12-3-30, Hot Girl Walk, Monk Mode.
 - **Агент**: чат с Claude (`claude-opus-5-5`). Он читает план и меняет его сам: добавляет и переносит задачи, создаёт привычки, подводит итоги.
 - **Неделя**: выполнение по дням и по привычкам, разбор недели от агента.
-- **Синхронизация** iPhone ↔ Mac через ваш сервер. Данные хранятся и на устройстве, так что приложение работает офлайн.
+- **Синхронизация** iPhone ↔ Mac через ваш сервер: устройства обмениваются только изменёнными записями, конфликт решается по записи (побеждает более поздняя правка). Данные хранятся и на устройстве, так что приложение работает офлайн.
 
 Стек: React 19 + [Astryx](https://github.com/facebook/astryx) (тема matcha), Vite, Node 22 без фреймворков, `@anthropic-ai/sdk`.
 
@@ -26,7 +26,7 @@ cp .env.example .env      # впишите DOMAIN, APP_PASSWORD, ANTHROPIC_API_K
 docker compose up -d --build
 ```
 
-Caddy сам получит сертификат. Данные лежат в `./data/state.json`: бэкап делается обычным копированием файла.
+Caddy сам получит сертификат. Данные хранятся в Docker-томе `app_data`. Бэкап на хост: `docker compose cp app:/data/state.json ./backup-state.json`. Резервную копию в JSON можно скачать и из приложения («Ещё» → «Скачать резервную копию»).
 
 Без Docker: `npm ci && npm run build`, затем `APP_PASSWORD=... ANTHROPIC_API_KEY=... TRUST_PROXY=1 npm start` за любым reverse proxy с HTTPS. `TRUST_PROXY=1` ставьте только за прокси, иначе ограничение на неверные пароли можно обойти подменой `X-Forwarded-For`.
 
@@ -58,7 +58,7 @@ npm run typecheck
 Структура:
 
 - `shared/`: модель данных, слияние по записям (last-write-wins), серии, шаблоны челленджей. Используется и клиентом, и сервером.
-- `server/`: HTTP (`http.ts`), JSON-хранилище с атомарной записью (`storage.ts`), агент (`agent.ts`) и его инструменты (`tools.ts`).
-- `src/`: экраны (`screens/`), состояние и синхронизация (`lib/store.tsx`), тема (`themes/matcha`).
+- `server/`: HTTP (`http.ts`: `POST /api/sync`, `POST /api/agent`, раздача PWA), JSON-хранилище с атомарной записью и ревизиями записей (`storage.ts`), агент (`agent.ts`) и его инструменты (`tools.ts`).
+- `src/`: экраны (`screens/`), состояние и синхронизация (`lib/store.tsx`), чат с агентом (`lib/chat.tsx`), тема (`themes/matcha`).
 
 Правила UI-библиотеки описаны в `AGENTS.md`. Справку по компонентам выдаёт `npx astryx component <Name>`.

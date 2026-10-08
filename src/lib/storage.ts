@@ -20,5 +20,7 @@ export function save(key: string, value: unknown): void {
 export const KEYS = {
   state: 'habits.state.v1',
   password: 'habits.password.v1',
+  /** {rev, pushedAt}: server cursor and the local watermark of pushed edits. */
+  sync: 'habits.sync.v1',
   chat: 'habits.chat.v1',
 } as const;

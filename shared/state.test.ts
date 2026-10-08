@@ -1,8 +1,11 @@
 import {describe, expect, it} from 'vitest';
 import {addDays, isISODate, startOfWeek, weekdayOf} from './dates.ts';
 import {
+  changedSince,
   checkId,
+  clampFuture,
   completionRate,
+  rebaseChanges,
   currentStreak,
   dayProgress,
   mergeStates,
@@ -18,6 +21,7 @@ const habit = (over: Partial<Habit> = {}): Habit => ({
   name: 'Вода',
   emoji: '💧',
   days: [0, 1, 2, 3, 4, 5, 6],
+  startDate: '2026-01-01',
   createdAt: new Date(2026, 0, 1, 9).getTime(),
   updatedAt: 1,
   ...over,
@@ -84,6 +88,15 @@ describe('sanitizeState', () => {
     expect(Object.keys(s.habits)).toEqual(['h1']);
     expect(Object.keys(s.checks)).toEqual(['h1:2026-10-08']);
   });
+  it('clips over-long text instead of dropping the record', () => {
+    const s = sanitizeState({tasks: {t1: task({title: 'x'.repeat(5000), notes: 'n'.repeat(9000)})}});
+    expect(s.tasks.t1.title).toHaveLength(300);
+    expect(s.tasks.t1.notes).toHaveLength(2000);
+  });
+  it('drops unknown fields', () => {
+    const s = sanitizeState({tasks: {t1: {...task(), evil: '<script>'}}});
+    expect(Object.keys(s.tasks.t1)).not.toContain('evil');
+  });
   it('survives garbage input', () => {
     expect(sanitizeState(null)).toEqual(emptyState());
     expect(sanitizeState({tasks: 'nope'})).toEqual(emptyState());
@@ -134,5 +147,51 @@ describe('streaks and progress', () => {
     const s = upsertHabit(emptyState(), habit({days: [1]}));
     expect(completionRate(s, s.habits.h1, '2026-10-06', '2026-10-08')).toBeNull();
     expect(completionRate(s, s.habits.h1, '2026-10-05', '2026-10-08')).toBe(0);
+  });
+});
+
+describe('sync helpers', () => {
+  it('changedSince picks records stamped at or after the watermark', () => {
+    let s = upsertTask(emptyState(), task({id: 'old', updatedAt: 10}));
+    s = upsertTask(s, task({id: 'new', updatedAt: 20}));
+    expect(Object.keys(changedSince(s, 20).tasks)).toEqual(['new']);
+  });
+
+  it('clampFuture pulls far-future timestamps back to now', () => {
+    const s = upsertTask(emptyState(), task({updatedAt: 1e308}));
+    expect(clampFuture(s, 1000).tasks.t1.updatedAt).toBe(1000);
+    const near = upsertTask(emptyState(), task({updatedAt: 1000 + 60_000}));
+    expect(clampFuture(near, 1000).tasks.t1.updatedAt).toBe(61_000);
+  });
+
+  it('rebaseChanges keeps a concurrent user edit on another field', () => {
+    const before = upsertTask(emptyState(), task({time: '10:00', updatedAt: 1}));
+    // Agent moved the task to tomorrow and dropped its time.
+    const {time: _t, ...moved} = before.tasks.t1;
+    const after = upsertTask(before, {...moved, date: '2026-10-09', updatedAt: 5});
+    // Meanwhile the user ticked it done.
+    const current = upsertTask(before, {...before.tasks.t1, done: true, updatedAt: 3});
+    const out = rebaseChanges(current, before, after, 10).tasks.t1;
+    expect(out).toMatchObject({date: '2026-10-09', done: true, updatedAt: 10});
+    expect(out.time).toBeUndefined();
+  });
+
+  it('rebaseChanges adds new records and leaves untouched ones alone', () => {
+    const before = upsertTask(emptyState(), task());
+    const after = upsertTask(before, task({id: 't2', title: 'Новая'}));
+    const current = upsertTask(before, task({id: 't3'}));
+    const out = rebaseChanges(current, before, after, 10);
+    expect(Object.keys(out.tasks).sort()).toEqual(['t1', 't2', 't3']);
+    expect(out.tasks.t1).toBe(current.tasks.t1);
+  });
+});
+
+describe('habit start date', () => {
+  it('days before the start never count as due or missed', () => {
+    let s = upsertHabit(emptyState(), habit({startDate: '2026-10-08'}));
+    s = setCheck(s, 'h1', '2026-10-08', true);
+    expect(completionRate(s, s.habits.h1, '2026-09-25', '2026-10-08')).toBe(1);
+    expect(dayProgress(s, '2026-10-07')).toEqual({done: 0, total: 0});
+    expect(currentStreak(s, s.habits.h1, '2026-10-08')).toBe(1);
   });
 });

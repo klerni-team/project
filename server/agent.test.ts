@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {upsertTask} from '../shared/state.ts';
-import {emptyState, type AppState, type Task} from '../shared/types.ts';
+import {emptyState, type AgentResponse, type AppState, type SyncResponse, type Task} from '../shared/types.ts';
 import {parseAgentRequest, runAgent, type MessagesClient} from './agent.ts';
 import {createHandler} from './http.ts';
 import {Storage} from './storage.ts';
@@ -37,7 +37,12 @@ const task = (over: Partial<Task> = {}): Task => ({
   id: 't1', title: 'Отчёт', date: '2026-10-08', time: '10:00', durationMin: 60, done: false, updatedAt: 1, ...over,
 });
 
-const req = (content = 'Спланируй день') => ({messages: [{role: 'user' as const, content}], today: '2026-10-08', now: '09:00'});
+const req = (content = 'Спланируй день', requestId = 'req-00000001') => ({
+  requestId,
+  messages: [{role: 'user' as const, content}],
+  today: '2026-10-08',
+  now: '09:00',
+});
 
 describe('tools', () => {
   const ctx = (state: AppState = emptyState()): ToolContext => ({state, today: '2026-10-08', now: () => 100});
@@ -75,6 +80,10 @@ describe('parseAgentRequest', () => {
     expect(() => parseAgentRequest({messages: [{role: 'assistant', content: 'hi'}], today: '2026-10-08', now: '09:00'})).toThrow();
     expect(() => parseAgentRequest({...req(), now: '9am'})).toThrow();
     expect(() => parseAgentRequest({...req(), messages: [{role: 'system', content: 'x'}]})).toThrow();
+  });
+  it('requires a well-formed requestId', () => {
+    expect(() => parseAgentRequest({...req(), requestId: undefined})).toThrow(/requestId/);
+    expect(() => parseAgentRequest({...req(), requestId: 'bad id!'})).toThrow(/requestId/);
   });
   it('drops leading assistant turns', () => {
     const r = parseAgentRequest({...req(), messages: [{role: 'assistant', content: 'Привет'}, {role: 'user', content: 'План'}]});
@@ -136,64 +145,104 @@ describe('runAgent', () => {
 
 describe('http', () => {
   let dir: string;
-  let server: Server;
+  let server: Server | null = null;
   let base: string;
   let storage: Storage;
 
   async function start(agent: MessagesClient | null) {
+    if (server) await new Promise(r => server!.close(r));
     storage = new Storage(dir);
     server = createServer(createHandler({storage, password: 'secret-pass', agent, staticDir: null}));
-    await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+    await new Promise<void>(r => server!.listen(0, '127.0.0.1', r));
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   }
   const auth = {authorization: 'Bearer secret-pass', 'content-type': 'application/json'};
+  const sync = async (since: number, changes: AppState) =>
+    (await (await fetch(`${base}/api/sync`, {method: 'POST', headers: auth, body: JSON.stringify({since, changes})})).json()) as SyncResponse;
+  const ask = (body: unknown) => fetch(`${base}/api/agent`, {method: 'POST', headers: auth, body: JSON.stringify(body)});
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'habits-'));
   });
   afterEach(async () => {
-    await new Promise(r => server.close(r));
+    if (server) await new Promise(r => server!.close(r));
+    server = null;
     await rm(dir, {recursive: true, force: true});
   });
 
   it('rejects requests without the password', async () => {
     await start(null);
-    expect((await fetch(`${base}/api/state`)).status).toBe(401);
-    expect((await fetch(`${base}/api/state`, {headers: {authorization: 'Bearer nope'}})).status).toBe(401);
+    expect((await fetch(`${base}/api/sync`, {method: 'POST', body: '{}'})).status).toBe(401);
+    expect((await fetch(`${base}/api/sync`, {method: 'POST', headers: {authorization: 'Bearer nope'}, body: '{}'})).status).toBe(401);
     expect((await fetch(`${base}/api/health`)).status).toBe(200);
   });
 
-  it('merges PUT state and persists it to disk', async () => {
+  it('syncs deltas by revision and persists to disk', async () => {
     await start(null);
-    const s = upsertTask(emptyState(), task());
-    const put = await fetch(`${base}/api/state`, {method: 'PUT', headers: auth, body: JSON.stringify(s)});
-    expect(put.status).toBe(200);
-    const older = upsertTask(emptyState(), task({title: 'старое', updatedAt: 0}));
-    const merged = await (await fetch(`${base}/api/state`, {method: 'PUT', headers: auth, body: JSON.stringify(older)})).json() as AppState;
-    expect(merged.tasks.t1.title).toBe('Отчёт');
-    const fresh = await new Storage(dir).read();
-    expect(fresh.tasks.t1.title).toBe('Отчёт');
+    const first = await sync(0, upsertTask(emptyState(), task()));
+    expect(Object.keys(first.changes.tasks)).toEqual(['t1']);
+    // Nothing new since the returned cursor.
+    const idle = await sync(first.rev, emptyState());
+    expect(idle.changes).toEqual(emptyState());
+    expect(idle.rev).toBe(first.rev);
+    // An older copy from another device loses and produces no change.
+    const stale = await sync(first.rev, upsertTask(emptyState(), task({title: 'старое', updatedAt: 0})));
+    expect(stale.changes.tasks).toEqual({});
+    expect((await new Storage(dir).read()).tasks.t1.title).toBe('Отчёт');
+    // A device that has never synced gets everything.
+    expect(Object.keys((await sync(0, emptyState())).changes.tasks)).toEqual(['t1']);
+  });
+
+  it('clamps future timestamps on sync', async () => {
+    await start(null);
+    await sync(0, upsertTask(emptyState(), task({updatedAt: 1e308})));
+    expect((await storage.read()).tasks.t1.updatedAt).toBeLessThan(Date.now() + 1000);
   });
 
   it('returns 503 for the agent without a key and 400 for bad bodies', async () => {
     await start(null);
-    expect((await fetch(`${base}/api/agent`, {method: 'POST', headers: auth, body: JSON.stringify(req())})).status).toBe(503);
-    await new Promise(r => server.close(r));
+    expect((await ask(req())).status).toBe(503);
     await start(fakeClient([]).client);
-    expect((await fetch(`${base}/api/agent`, {method: 'POST', headers: auth, body: '{"messages":[]}'})).status).toBe(400);
+    expect((await ask({messages: []})).status).toBe(400);
     expect((await fetch(`${base}/api/agent`, {method: 'POST', headers: auth, body: 'not json'})).status).toBe(400);
   });
 
-  it('agent edits are merged into stored state', async () => {
-    const {client} = fakeClient([
+  it('answers a retried request id once, without a second model run', async () => {
+    const {client, calls} = fakeClient([
       msg([toolUse('a', 'add_task', {title: 'Зал', date: '2026-10-08'})], 'tool_use'),
       msg([text('Добавил')], 'end_turn'),
     ]);
     await start(client);
-    const res = await fetch(`${base}/api/agent`, {method: 'POST', headers: auth, body: JSON.stringify(req())});
-    const body = await res.json() as {reply: string; state: AppState};
-    expect(body.reply).toBe('Добавил');
-    expect(Object.values(body.state.tasks)).toHaveLength(1);
+    const a = (await (await ask(req())).json()) as AgentResponse;
+    const b = (await (await ask(req())).json()) as AgentResponse;
+    expect(a.reply).toBe('Добавил');
+    expect(b).toEqual(a);
+    expect(calls).toHaveLength(2);
     expect(Object.values((await storage.read()).tasks)).toHaveLength(1);
+  });
+
+  it('keeps a user edit made while the agent was running', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(r => (release = r));
+    const script = [
+      msg([toolUse('a', 'update_task', {id: 't1', date: '2026-10-09'})], 'tool_use'),
+      msg([text('Перенёс')], 'end_turn'),
+    ];
+    const client: MessagesClient = {
+      async create() {
+        await gate;
+        return script.shift()!;
+      },
+    };
+    await start(client);
+    await sync(0, upsertTask(emptyState(), task({updatedAt: 1})));
+    const pending = ask(req('Перенеси на завтра'));
+    // The user ticks the task while the model is thinking.
+    await new Promise(r => setTimeout(r, 50));
+    await sync(0, upsertTask(emptyState(), task({done: true, updatedAt: 2})));
+    release();
+    const body = (await (await pending).json()) as AgentResponse;
+    expect(body.changes.tasks.t1).toMatchObject({date: '2026-10-09', done: true});
+    expect((await storage.read()).tasks.t1).toMatchObject({date: '2026-10-09', done: true});
   });
 });

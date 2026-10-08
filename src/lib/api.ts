@@ -1,4 +1,4 @@
-import type {AgentRequest, AgentResponse, AppState} from '../../shared/types.ts';
+import type {AgentRequest, AgentResponse, SyncRequest, SyncResponse} from '../../shared/types.ts';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -8,28 +8,35 @@ export class ApiError extends Error {
   }
 }
 
-async function call<T>(path: string, password: string, init: RequestInit = {}): Promise<T> {
+async function call<T>(path: string, password: string, body: unknown): Promise<T> {
   let res: Response;
   try {
     res = await fetch(path, {
-      ...init,
+      method: 'POST',
       headers: {authorization: `Bearer ${password}`, 'content-type': 'application/json'},
+      body: JSON.stringify(body),
     });
   } catch {
     throw new ApiError(0, 'Нет связи с сервером');
   }
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as {error?: string} | null;
-    throw new ApiError(res.status, body?.error ?? `Ошибка сервера ${res.status}`);
+    const data = (await res.json().catch(() => null)) as {error?: string} | null;
+    const message =
+      res.status === 401
+        ? 'Неверный пароль сервера'
+        : res.status === 429
+          ? 'Слишком много неверных паролей, подожди 10 минут'
+          : (data?.error ?? `Ошибка сервера ${res.status}`);
+    throw new ApiError(res.status, message);
   }
   return (await res.json()) as T;
 }
 
-export const syncState = (password: string, state: AppState) =>
-  call<AppState>('/api/state', password, {method: 'PUT', body: JSON.stringify(state)});
+export const syncState = (password: string, body: SyncRequest) =>
+  call<SyncResponse>('/api/sync', password, body);
 
 export const askAgent = (password: string, body: AgentRequest) =>
-  call<AgentResponse>('/api/agent', password, {method: 'POST', body: JSON.stringify(body)});
+  call<AgentResponse>('/api/agent', password, body);
 
 export async function health(): Promise<{ok: boolean; agent: boolean} | null> {
   try {

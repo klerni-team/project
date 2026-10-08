@@ -5,6 +5,7 @@ import './index.css';
 import {Theme} from '@astryxdesign/core/theme';
 import {matchaTheme} from './themes/matcha/matchaTheme';
 import {StoreProvider} from './lib/store.tsx';
+import {ChatProvider} from './lib/chat.tsx';
 import App from './App.tsx';
 
 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- root element exists in index.html
@@ -12,7 +13,9 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <Theme theme={matchaTheme}>
       <StoreProvider>
-        <App />
+        <ChatProvider>
+          <App />
+        </ChatProvider>
       </StoreProvider>
     </Theme>
   </StrictMode>,

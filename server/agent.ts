@@ -66,7 +66,10 @@ export function parseAgentRequest(body: unknown): AgentRequest {
   if (messages.at(-1)?.role !== 'user') {
     throw new AgentInputError('the last message must be from the user');
   }
-  return {messages, today: b.today, now: b.now};
+  if (typeof b.requestId !== 'string' || !/^[\w-]{8,64}$/.test(b.requestId)) {
+    throw new AgentInputError('requestId must be 8–64 letters, digits, - or _');
+  }
+  return {requestId: b.requestId, messages, today: b.today, now: b.now};
 }
 
 const WEEKDAYS_EN = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -114,7 +117,7 @@ export async function runAgent(
         reply: 'Не могу помочь с этим запросом. Попробуй сформулировать по-другому.',
         actions,
         state: ctx.state,
-        changed: actions.some(a => a.ok),
+        changed: actions.length > 0,
       };
     }
 
@@ -123,7 +126,6 @@ export async function runAgent(
     }
     messages.push({role: 'assistant', content: response.content});
 
-    if (response.stop_reason === 'pause_turn') continue;
     if (response.stop_reason !== 'tool_use') break;
 
     const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
@@ -132,7 +134,7 @@ export async function runAgent(
       try {
         const out = runTool(ctx, block.name, block.input);
         const mutates = !['get_day', 'list_habits'].includes(block.name);
-        if (mutates) actions.push({tool: block.name, summary: out.summary, ok: true});
+        if (mutates) actions.push({tool: block.name, summary: out.summary});
         results.push({type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(out.result)});
       } catch (err) {
         if (!(err instanceof ToolInputError)) throw err;
@@ -150,5 +152,5 @@ export async function runAgent(
   // Intermediate narration before tool calls is noise on a phone; the last
   // text block is the summary the prompt asks for.
   const reply = textParts.at(-1) ?? 'Готово.';
-  return {reply, actions, state: ctx.state, changed: actions.some(a => a.ok)};
+  return {reply, actions, state: ctx.state, changed: actions.length > 0};
 }

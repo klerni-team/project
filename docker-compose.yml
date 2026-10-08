@@ -6,7 +6,9 @@ services:
     environment:
       TRUST_PROXY: "1"
     volumes:
-      - ./data:/data
+      # Named volume: Docker copies the image's /data (owned by `node`) into it.
+      # A bind mount like ./data would be created root-owned and unwritable.
+      - app_data:/data
     expose:
       - "8787"
 
@@ -27,4 +29,5 @@ services:
       - app
 
 volumes:
+  app_data:
   caddy_data:

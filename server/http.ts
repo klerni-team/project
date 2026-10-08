@@ -2,8 +2,8 @@ import {createHash, timingSafeEqual} from 'node:crypto';
 import {readFile, stat} from 'node:fs/promises';
 import type {IncomingMessage, ServerResponse} from 'node:http';
 import {extname, join, normalize, sep} from 'node:path';
-import {sanitizeState} from '../shared/state.ts';
-import type {AgentResponse} from '../shared/types.ts';
+import {clampFuture, rebaseChanges, sanitizeState} from '../shared/state.ts';
+import {emptyState, type AgentResponse, type SyncResponse} from '../shared/types.ts';
 import {AgentInputError, parseAgentRequest, runAgent, type MessagesClient} from './agent.ts';
 import type {Storage} from './storage.ts';
 
@@ -19,7 +19,9 @@ export interface AppDeps {
   log?: (msg: string) => void;
 }
 
-const MAX_BODY = 2 * 1024 * 1024;
+const MAX_BODY = 8 * 1024 * 1024;
+/** How long a finished agent answer is kept for a retried request id. */
+const AGENT_REPLAY_MS = 15 * 60 * 1000;
 const FAIL_WINDOW_MS = 10 * 60 * 1000;
 const MAX_FAILS = 20;
 
@@ -69,7 +71,33 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 export function createHandler(deps: AppDeps) {
   const expected = digest(deps.password);
   const fails = new Map<string, {count: number; since: number}>();
+  const agentRuns = new Map<string, {at: number; result: Promise<AgentResponse>}>();
   const log = deps.log ?? (() => {});
+
+  /**
+   * Runs the agent on a snapshot (a long model call must not block sync),
+   * then re-applies its field edits on top of whatever the user changed
+   * meanwhile. A retried request id gets the first run's answer instead of
+   * a second, duplicate run.
+   */
+  function runAgentOnce(parsed: ReturnType<typeof parseAgentRequest>, agent: MessagesClient): Promise<AgentResponse> {
+    const now = Date.now();
+    for (const [id, run] of agentRuns) if (now - run.at > AGENT_REPLAY_MS) agentRuns.delete(id);
+    const existing = agentRuns.get(parsed.requestId);
+    if (existing) return existing.result;
+    const result = (async (): Promise<AgentResponse> => {
+      const before = await deps.storage.read();
+      const out = await runAgent(agent, parsed, before);
+      const changes = out.changed
+        ? await deps.storage.update(cur => rebaseChanges(cur, before, out.state, Date.now()))
+        : emptyState();
+      return {reply: out.reply, actions: out.actions, changes};
+    })();
+    agentRuns.set(parsed.requestId, {at: now, result});
+    // A failed run may be retried for real.
+    result.catch(() => agentRuns.delete(parsed.requestId));
+    return result;
+  }
 
   function authorize(req: IncomingMessage) {
     const forwarded = deps.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() : '';
@@ -96,13 +124,12 @@ export function createHandler(deps: AppDeps) {
     }
     authorize(req);
 
-    if (path === '/api/state') {
-      if (req.method === 'GET') return send(res, 200, await deps.storage.read());
-      if (req.method === 'PUT') {
-        const merged = await deps.storage.merge(sanitizeState(await readJson(req)));
-        return send(res, 200, merged);
-      }
-      throw new HttpError(405, 'method not allowed');
+    if (path === '/api/sync' && req.method === 'POST') {
+      const body = (await readJson(req)) as {since?: unknown; changes?: unknown} | null;
+      const since = typeof body?.since === 'number' && body.since >= 0 ? body.since : 0;
+      await deps.storage.merge(clampFuture(sanitizeState(body?.changes), Date.now()));
+      const out: SyncResponse = await deps.storage.changesSince(since);
+      return send(res, 200, out);
     }
 
     if (path === '/api/agent' && req.method === 'POST') {
@@ -114,12 +141,7 @@ export function createHandler(deps: AppDeps) {
         if (err instanceof AgentInputError) throw new HttpError(400, err.message);
         throw err;
       }
-      // The agent works on a snapshot so a long model call never blocks
-      // sync; its edits carry fresh timestamps and win the merge.
-      const result = await runAgent(deps.agent, parsed, await deps.storage.read());
-      const state = result.changed ? await deps.storage.merge(result.state) : await deps.storage.read();
-      const body: AgentResponse = {reply: result.reply, actions: result.actions, state};
-      return send(res, 200, body);
+      return send(res, 200, await runAgentOnce(parsed, deps.agent));
     }
 
     throw new HttpError(404, 'not found');

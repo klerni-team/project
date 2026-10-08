@@ -8,6 +8,7 @@ import {HStack} from '@astryxdesign/core/Stack';
 import {TextArea} from '@astryxdesign/core/TextArea';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {TimeInput, type ISOTimeString} from '@astryxdesign/core/TimeInput';
+import {LIMITS} from '../../shared/state.ts';
 import type {ISODate, Task} from '../../shared/types.ts';
 import {useStore} from '../lib/store.tsx';
 import {Sheet} from './Sheet.tsx';
@@ -54,12 +55,12 @@ export function TaskSheet({
     if (!canSave) return;
     saveTask({
       id: task?.id,
-      title: draft.title.trim(),
+      title: draft.title.trim().slice(0, LIMITS.title),
       date: draft.date,
       done: task?.done ?? false,
       ...(draft.time ? {time: draft.time} : {}),
       ...(draft.durationMin ? {durationMin: draft.durationMin} : {}),
-      ...(draft.notes.trim() ? {notes: draft.notes.trim()} : {}),
+      ...(draft.notes.trim() ? {notes: draft.notes.trim().slice(0, LIMITS.notes)} : {}),
     });
     onClose();
   };
@@ -105,7 +106,15 @@ export function TaskSheet({
             width="100%"
           />
         </HStack>
-        <TextArea label="Заметки" value={draft.notes} onChange={notes => set({notes})} isOptional rows={2} width="100%" />
+        <TextArea
+          label="Заметки"
+          value={draft.notes}
+          onChange={notes => set({notes})}
+          isOptional
+          rows={2}
+          maxLength={LIMITS.notes}
+          width="100%"
+        />
         <HStack gap={2} hAlign="between">
           {task ? (
             <Button

@@ -25,6 +25,8 @@ export interface Habit extends BaseRecord {
   durationMin?: number;
   /** Template id when the habit came from a challenge (e.g. `75-hard`). */
   challenge?: string;
+  /** First local date the habit is due; earlier days never count as missed. */
+  startDate: ISODate;
   createdAt: number;
 }
 
@@ -57,8 +59,22 @@ export interface ChatTurn {
   content: string;
 }
 
+/** Body of `POST /api/sync`: local edits since the last push, and the server cursor. */
+export interface SyncRequest {
+  since: number;
+  changes: AppState;
+}
+
+/** Records the server changed after `since`, and the new cursor. */
+export interface SyncResponse {
+  rev: number;
+  changes: AppState;
+}
+
 /** Body of `POST /api/agent`. */
 export interface AgentRequest {
+  /** Client-generated; a retried request with the same id is answered once. */
+  requestId: string;
   messages: ChatTurn[];
   /** The client's local date and time, so the agent plans in the user's zone. */
   today: ISODate;
@@ -68,12 +84,11 @@ export interface AgentRequest {
 export interface AgentAction {
   tool: string;
   summary: string;
-  ok: boolean;
 }
 
-/** Response of `POST /api/agent`. */
+/** Response of `POST /api/agent`. `changes` holds the records the agent wrote. */
 export interface AgentResponse {
   reply: string;
   actions: AgentAction[];
-  state: AppState;
+  changes: AppState;
 }

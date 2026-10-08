@@ -9,6 +9,7 @@ import {
   isChecked,
   liveHabits,
   newId,
+  LIMITS,
   setCheck,
   tasksOn,
   upsertHabit,
@@ -152,7 +153,7 @@ export const TOOL_DEFS: Anthropic.Beta.BetaTool[] = [
 
 // ------------------------------------------------------------ validators
 
-function str(input: Input, key: string, max = 300): string | undefined {
+function str(input: Input, key: string, max: number = LIMITS.title): string | undefined {
   const v = input[key];
   if (v === undefined) return undefined;
   if (typeof v !== 'string' || v.trim() === '' || v.length > max) {
@@ -288,7 +289,7 @@ const handlers: Record<string, (ctx: ToolContext, input: Input) => ToolOutcome> 
     if (tm) t.time = tm;
     const dur = duration(input);
     if (dur) t.durationMin = dur;
-    const notes = str(input, 'notes', 2000);
+    const notes = str(input, 'notes', LIMITS.notes);
     if (notes) t.notes = notes;
     ctx.state = upsertTask(ctx.state, t);
     return {summary: `Добавил «${t.title}» · ${when(t.date, t.time)}`, result: taskView(t)};
@@ -306,7 +307,7 @@ const handlers: Record<string, (ctx: ToolContext, input: Input) => ToolOutcome> 
     if (dur) t.durationMin = dur;
     const done = bool(input, 'done');
     if (done !== undefined) t.done = done;
-    const notes = str(input, 'notes', 2000);
+    const notes = str(input, 'notes', LIMITS.notes);
     if (notes) t.notes = notes;
     ctx.state = upsertTask(ctx.state, t);
     const moved = t.date !== prev.date || t.time !== prev.time;
@@ -329,8 +330,9 @@ const handlers: Record<string, (ctx: ToolContext, input: Input) => ToolOutcome> 
     const h: Habit = {
       id: newId(),
       name: reqStr(input, 'name'),
-      emoji: str(input, 'emoji', 16) ?? '✅',
+      emoji: str(input, 'emoji', LIMITS.emoji) ?? '✅',
       days: days(input) ?? EVERY_DAY,
+      startDate: ctx.today,
       createdAt: now,
       updatedAt: now,
     };
@@ -347,7 +349,7 @@ const handlers: Record<string, (ctx: ToolContext, input: Input) => ToolOutcome> 
     let h: Habit = {...prev, updatedAt: ctx.now()};
     const name = str(input, 'name');
     if (name) h.name = name;
-    const emoji = str(input, 'emoji', 16);
+    const emoji = str(input, 'emoji', LIMITS.emoji);
     if (emoji) h.emoji = emoji;
     const ds = days(input);
     if (ds) h.days = ds;

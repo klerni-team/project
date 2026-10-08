@@ -14,7 +14,7 @@ import {ChevronLeft, ChevronRight, Pencil, Plus, Sparkles} from 'lucide-react';
 import type {Navigate} from '../App.tsx';
 import {addDays, formatDayTitle, parseISODate, toISOTime} from '../../shared/dates.ts';
 import {currentStreak, dayProgress, habitsDueOn, isChecked, tasksOn} from '../../shared/state.ts';
-import type {Habit, ISODate, Task} from '../../shared/types.ts';
+import type {Habit, Task} from '../../shared/types.ts';
 import {TaskSheet} from '../components/TaskSheet.tsx';
 import {useStore} from '../lib/store.tsx';
 
@@ -37,7 +37,9 @@ function timeLabel(time?: string, minutes?: number): string | null {
 
 export function Today({navigate}: {navigate: Navigate}) {
   const {state, today, toggleHabit, toggleTask} = useStore();
-  const [date, setDate] = useState<ISODate>(today);
+  // An offset from today, so a screen left open overnight moves to the new day.
+  const [offset, setOffset] = useState(0);
+  const date = addDays(today, offset);
   const [editing, setEditing] = useState<Task | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
 
@@ -128,15 +130,15 @@ export function Today({navigate}: {navigate: Navigate}) {
         <LayoutHeader hasDivider>
           <VStack gap={3}>
             <HStack gap={2} vAlign="center">
-              <IconButton label="Предыдущий день" icon={<ChevronLeft size={18} />} variant="ghost" onClick={() => setDate(addDays(date, -1))} />
+              <IconButton label="Предыдущий день" icon={<ChevronLeft size={18} />} variant="ghost" onClick={() => setOffset(o => o - 1)} />
               <StackItem size="fill">
                 <VStack gap={0.5}>
                   <Heading level={1}>{formatDayTitle(date, today)}</Heading>
                   {date === today && <Text type="supporting">{dateLine}</Text>}
                 </VStack>
               </StackItem>
-              {date !== today && <Button label="Сегодня" variant="ghost" size="sm" onClick={() => setDate(today)} />}
-              <IconButton label="Следующий день" icon={<ChevronRight size={18} />} variant="ghost" onClick={() => setDate(addDays(date, 1))} />
+              {date !== today && <Button label="Сегодня" variant="ghost" size="sm" onClick={() => setOffset(0)} />}
+              <IconButton label="Следующий день" icon={<ChevronRight size={18} />} variant="ghost" onClick={() => setOffset(o => o + 1)} />
               <IconButton label="Новая задача" icon={<Plus size={18} />} variant="primary" onClick={openNew} />
             </HStack>
             {progress.total > 0 && (

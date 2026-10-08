@@ -8,7 +8,7 @@ import {TextInput} from '@astryxdesign/core/TextInput';
 import {TimeInput, type ISOTimeString} from '@astryxdesign/core/TimeInput';
 import {ToggleButton} from '@astryxdesign/core/ToggleButton';
 import {weekdayShort} from '../../shared/dates.ts';
-import {currentStreak} from '../../shared/state.ts';
+import {currentStreak, LIMITS} from '../../shared/state.ts';
 import {EVERY_DAY} from '../../shared/templates.ts';
 import type {Habit, Weekday} from '../../shared/types.ts';
 import {useStore} from '../lib/store.tsx';
@@ -48,7 +48,7 @@ export function HabitSheet({isOpen, onClose, habit}: {isOpen: boolean; onClose: 
     if (!canSave) return;
     saveHabit({
       id: habit?.id,
-      name: draft.name.trim(),
+      name: draft.name.trim().slice(0, LIMITS.title),
       emoji: draft.emoji.trim() || '✅',
       days: draft.days,
       ...(draft.time ? {time: draft.time} : {}),

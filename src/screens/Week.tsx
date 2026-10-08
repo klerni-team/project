@@ -19,9 +19,10 @@ const fmt = (d: ISODate, opts: Intl.DateTimeFormatOptions) => parseISODate(d).to
 
 export function Week({navigate}: {navigate: Navigate}) {
   const {state, today} = useStore();
-  const [monday, setMonday] = useState<ISODate>(() => startOfWeek(today));
+  const [weekOffset, setWeekOffset] = useState(0);
+  const monday = addDays(startOfWeek(today), 7 * weekOffset);
   const sunday = addDays(monday, 6);
-  const isCurrent = monday === startOfWeek(today);
+  const isCurrent = weekOffset === 0;
   // Only days that have started count toward the week's numbers.
   const lastCounted = sunday < today ? sunday : today;
   const days = Array.from({length: 7}, (_, i) => addDays(monday, i));
@@ -39,7 +40,7 @@ export function Week({navigate}: {navigate: Navigate}) {
       header={
         <LayoutHeader hasDivider>
           <HStack gap={2} vAlign="center">
-            <IconButton label="Прошлая неделя" icon={<ChevronLeft size={18} />} variant="ghost" onClick={() => setMonday(addDays(monday, -7))} />
+            <IconButton label="Прошлая неделя" icon={<ChevronLeft size={18} />} variant="ghost" onClick={() => setWeekOffset(w => w - 1)} />
             <StackItem size="fill">
               <VStack gap={0.5}>
                 <Heading level={1}>{isCurrent ? 'Эта неделя' : 'Неделя'}</Heading>
@@ -51,7 +52,7 @@ export function Week({navigate}: {navigate: Navigate}) {
               icon={<ChevronRight size={18} />}
               variant="ghost"
               isDisabled={isCurrent}
-              onClick={() => setMonday(addDays(monday, 7))}
+              onClick={() => setWeekOffset(w => w + 1)}
             />
           </HStack>
         </LayoutHeader>

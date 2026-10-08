@@ -15,15 +15,8 @@ import {Spinner} from '@astryxdesign/core/Spinner';
 import {HStack, StackItem, VStack} from '@astryxdesign/core/Stack';
 import {Heading} from '@astryxdesign/core/Text';
 import {Sparkles} from 'lucide-react';
-import {toISODate, toISOTime} from '../../shared/dates.ts';
-import type {AgentAction, ChatTurn} from '../../shared/types.ts';
-import {ApiError, askAgent} from '../lib/api.ts';
-import {KEYS, load, save} from '../lib/storage.ts';
+import {useChat} from '../lib/chat.tsx';
 import {useStore} from '../lib/store.tsx';
-
-interface StoredTurn extends ChatTurn {
-  actions?: AgentAction[];
-}
 
 const SUGGESTIONS: {label: string; prompt: string}[] = [
   {label: 'Спланируй мой день', prompt: 'Спланируй мой сегодняшний день: работа, спорт и время на себя.'},
@@ -32,25 +25,10 @@ const SUGGESTIONS: {label: string; prompt: string}[] = [
   {label: 'Встрой утреннюю пробежку', prompt: 'Хочу начать бегать по утрам три раза в неделю, помоги встроить это в расписание.'},
 ];
 
-/** Older turns are trimmed; the server also caps what it sends to the model. */
-const MAX_STORED = 60;
-
-function isStoredTurn(v: unknown): v is StoredTurn {
-  const t = v as StoredTurn;
-  return !!t && (t.role === 'user' || t.role === 'assistant') && typeof t.content === 'string';
-}
-
 export function Agent({draft, onDraftConsumed}: {draft: string; onDraftConsumed: () => void}) {
-  const {password, applyRemote} = useStore();
-  const [turns, setTurns] = useState<StoredTurn[]>(() => {
-    const raw = load<unknown>(KEYS.chat, []);
-    return Array.isArray(raw) ? raw.filter(isStoredTurn) : [];
-  });
+  const {password} = useStore();
+  const {turns, pending, error, retryText, send: sendChat, clear} = useChat();
   const [input, setInput] = useState(draft);
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => save(KEYS.chat, turns.slice(-MAX_STORED)), [turns]);
 
   useEffect(() => {
     if (draft) {
@@ -59,37 +37,15 @@ export function Agent({draft, onDraftConsumed}: {draft: string; onDraftConsumed:
     }
   }, [draft, onDraftConsumed]);
 
-  const send = async (text: string) => {
-    const content = text.trim();
-    if (!content || pending) return;
-    const next = [...turns, {role: 'user' as const, content}];
-    setTurns(next);
+  // A failed send puts its text back so it can be resent as is.
+  useEffect(() => {
+    if (retryText) setInput(retryText);
+  }, [retryText]);
+
+  const send = (text: string) => {
+    if (!text.trim() || pending) return;
     setInput('');
-    setError(null);
-    setPending(true);
-    try {
-      const now = new Date();
-      const res = await askAgent(password, {
-        messages: next.map(({role, content}) => ({role, content})),
-        today: toISODate(now),
-        now: toISOTime(now),
-      });
-      applyRemote(res.state);
-      setTurns(t => [...t, {role: 'assistant', content: res.reply, actions: res.actions}]);
-    } catch (err) {
-      setError(
-        err instanceof ApiError && err.status === 401
-          ? 'Неверный пароль сервера — проверь его в настройках'
-          : err instanceof Error
-            ? err.message
-            : 'Что-то пошло не так',
-      );
-      // Put the text back so a failed request can be resent.
-      setTurns(turns);
-      setInput(content);
-    } finally {
-      setPending(false);
-    }
+    void sendChat(text);
   };
 
   const header = (
@@ -99,7 +55,7 @@ export function Agent({draft, onDraftConsumed}: {draft: string; onDraftConsumed:
           <Heading level={1}>Агент</Heading>
         </StackItem>
         {turns.length > 0 && (
-          <Button label="Новый чат" variant="ghost" size="sm" onClick={() => setTurns([])} isDisabled={pending} />
+          <Button label="Новый чат" variant="ghost" size="sm" onClick={clear} isDisabled={pending} />
         )}
       </HStack>
     </LayoutHeader>
@@ -137,7 +93,7 @@ export function Agent({draft, onDraftConsumed}: {draft: string; onDraftConsumed:
               <ChatComposer
                 value={input}
                 onChange={setInput}
-                onSubmit={v => void send(v)}
+                onSubmit={send}
                 placeholder="Что запланировать?"
                 isDisabled={pending}
                 status={error ? {type: 'error', message: error} : undefined}
@@ -152,7 +108,7 @@ export function Agent({draft, onDraftConsumed}: {draft: string; onDraftConsumed:
                 />
                 <VStack gap={2}>
                   {SUGGESTIONS.map(s => (
-                    <Button key={s.label} label={s.label} variant="secondary" width="100%" onClick={() => void send(s.prompt)} />
+                    <Button key={s.label} label={s.label} variant="secondary" width="100%" onClick={() => send(s.prompt)} />
                   ))}
                 </VStack>
               </VStack>

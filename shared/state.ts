@@ -1,4 +1,4 @@
-import {addDays, isISODate, isISOTime, toISODate, weekdayOf} from './dates.ts';
+import {addDays, isISODate, isISOTime, weekdayOf} from './dates.ts';
 import type {
   AppState,
   BaseRecord,
@@ -11,6 +11,12 @@ import type {
 
 export const newId = () => crypto.randomUUID();
 export const checkId = (habitId: string, date: ISODate) => `${habitId}:${date}`;
+
+export const TABLES = ['habits', 'tasks', 'checks'] as const;
+export type TableName = (typeof TABLES)[number];
+
+/** Text limits shared by forms, agent tools and server validation. */
+export const LIMITS = {title: 300, notes: 2000, emoji: 16} as const;
 
 // ---------------------------------------------------------------- merge
 
@@ -35,76 +41,145 @@ export function mergeStates(a: AppState, b: AppState): AppState {
   };
 }
 
-// ----------------------------------------------------------- validation
-
-const MAX_TEXT = 500;
-const isStr = (v: unknown, max = MAX_TEXT): v is string =>
-  typeof v === 'string' && v.length <= max;
-const isNum = (v: unknown): v is number =>
-  typeof v === 'number' && Number.isFinite(v);
-const isDuration = (v: unknown) =>
-  v === undefined || (isNum(v) && v > 0 && v <= 24 * 60);
-const isBase = (v: Record<string, unknown>, id: string) =>
-  v.id === id && isNum(v.updatedAt) && (v.deleted === undefined || typeof v.deleted === 'boolean');
-const isWeekdays = (v: unknown): v is Weekday[] =>
-  Array.isArray(v) && v.every(d => Number.isInteger(d) && d >= 0 && d <= 6);
-
-function isHabit(v: Record<string, unknown>, id: string): boolean {
-  return (
-    isBase(v, id) &&
-    isStr(v.name) &&
-    isStr(v.emoji, 16) &&
-    isWeekdays(v.days) &&
-    (v.time === undefined || isISOTime(v.time)) &&
-    isDuration(v.durationMin) &&
-    (v.challenge === undefined || isStr(v.challenge, 64)) &&
-    isNum(v.createdAt)
-  );
+/** Records in `s` stamped at or after `since` (local edits not yet pushed). */
+export function changedSince(s: AppState, since: number): AppState {
+  const pick = <T extends BaseRecord>(t: Record<string, T>) =>
+    Object.fromEntries(Object.entries(t).filter(([, r]) => r.updatedAt >= since));
+  return {habits: pick(s.habits), tasks: pick(s.tasks), checks: pick(s.checks)};
 }
 
-function isTask(v: Record<string, unknown>, id: string): boolean {
-  return (
-    isBase(v, id) &&
-    isStr(v.title) &&
-    isISODate(v.date) &&
-    (v.time === undefined || isISOTime(v.time)) &&
-    isDuration(v.durationMin) &&
-    typeof v.done === 'boolean' &&
-    (v.notes === undefined || isStr(v.notes, 4000))
-  );
+/**
+ * A device with a clock far in the future would win every merge forever.
+ * The server pulls such timestamps back to its own time.
+ */
+export function clampFuture(s: AppState, now: number, skewMs = 5 * 60_000): AppState {
+  const fix = <T extends BaseRecord>(t: Record<string, T>) =>
+    Object.fromEntries(
+      Object.entries(t).map(([id, r]) => [id, r.updatedAt > now + skewMs ? {...r, updatedAt: now} : r]),
+    );
+  return {habits: fix(s.habits), tasks: fix(s.tasks), checks: fix(s.checks)};
 }
 
-function isCheck(v: Record<string, unknown>, id: string): boolean {
-  return (
-    isBase(v, id) &&
-    isStr(v.habitId, 64) &&
-    isISODate(v.date) &&
-    id === checkId(v.habitId, v.date) &&
-    typeof v.done === 'boolean'
-  );
-}
-
-function pickValid<T>(
-  table: unknown,
-  ok: (v: Record<string, unknown>, id: string) => boolean,
-): Record<string, T> {
-  const out: Record<string, T> = {};
-  if (!table || typeof table !== 'object') return out;
-  for (const [id, v] of Object.entries(table)) {
-    if (id.length <= 140 && v && typeof v === 'object' && ok(v as Record<string, unknown>, id)) {
-      out[id] = v as T;
+/**
+ * Re-applies the field edits that turned `before` into `after` on top of
+ * `current`. Used when the agent worked on a snapshot: fields the user
+ * changed meanwhile on the same record survive unless the agent changed
+ * that same field.
+ */
+export function rebaseChanges(current: AppState, before: AppState, after: AppState, now: number): AppState {
+  const out: AppState = {habits: {...current.habits}, tasks: {...current.tasks}, checks: {...current.checks}};
+  for (const table of TABLES) {
+    const prev = before[table] as Record<string, BaseRecord>;
+    const next = after[table] as Record<string, BaseRecord>;
+    const target = out[table] as Record<string, BaseRecord>;
+    for (const [id, rec] of Object.entries(next)) {
+      const old = prev[id];
+      if (old === rec) continue;
+      const base = target[id] ?? old;
+      if (!base) {
+        target[id] = rec;
+        continue;
+      }
+      const merged: Record<string, unknown> = {...base};
+      const keys = new Set([...Object.keys(old ?? {}), ...Object.keys(rec)]);
+      for (const k of keys) {
+        const a = (old as unknown as Record<string, unknown> | undefined)?.[k];
+        const b = (rec as unknown as Record<string, unknown>)[k];
+        if (k === 'updatedAt' || JSON.stringify(a) === JSON.stringify(b)) continue;
+        if (b === undefined) delete merged[k];
+        else merged[k] = b;
+      }
+      merged.updatedAt = Math.max(now, base.updatedAt + 1);
+      target[id] = merged as unknown as BaseRecord;
     }
   }
   return out;
 }
 
-/** Keeps only well-formed records; anything malformed is dropped, not repaired. */
-export function sanitizeState(raw: unknown): AppState {
-  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+// ----------------------------------------------------------- validation
+
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const isDuration = (v: unknown) => v === undefined || (isNum(v) && v > 0 && v <= 24 * 60);
+const isWeekdays = (v: unknown): v is Weekday[] =>
+  Array.isArray(v) && v.length > 0 && v.every(d => Number.isInteger(d) && d >= 0 && d <= 6);
+
+/** Non-empty string, clipped to `max` (over-long text is truncated, never dropped). */
+function text(v: unknown, max: number): string | null {
+  return typeof v === 'string' && v.trim() !== '' ? v.slice(0, max) : null;
+}
+
+type Raw = Record<string, unknown>;
+
+function base(v: Raw, id: string): BaseRecord | null {
+  if (v.id !== id || !isNum(v.updatedAt)) return null;
+  if (v.deleted !== undefined && typeof v.deleted !== 'boolean') return null;
+  return {id, updatedAt: v.updatedAt, ...(v.deleted ? {deleted: true} : {})};
+}
+
+function optionalTiming(v: Raw): {time?: string; durationMin?: number} | null {
+  if (v.time !== undefined && !isISOTime(v.time)) return null;
+  if (!isDuration(v.durationMin)) return null;
   return {
-    habits: pickValid<Habit>(r.habits, isHabit),
-    tasks: pickValid<Task>(r.tasks, isTask),
-    checks: pickValid<HabitCheck>(r.checks, isCheck),
+    ...(v.time !== undefined ? {time: v.time as string} : {}),
+    ...(v.durationMin !== undefined ? {durationMin: v.durationMin as number} : {}),
+  };
+}
+
+function toHabit(v: Raw, id: string): Habit | null {
+  const b = base(v, id);
+  const name = text(v.name, LIMITS.title);
+  const timing = optionalTiming(v);
+  if (!b || !name || !timing || !isWeekdays(v.days) || !isISODate(v.startDate) || !isNum(v.createdAt)) return null;
+  const challenge = text(v.challenge, 64);
+  return {
+    ...b,
+    name,
+    emoji: text(v.emoji, LIMITS.emoji) ?? '✅',
+    days: v.days,
+    startDate: v.startDate,
+    createdAt: v.createdAt,
+    ...timing,
+    ...(challenge ? {challenge} : {}),
+  };
+}
+
+function toTask(v: Raw, id: string): Task | null {
+  const b = base(v, id);
+  const title = text(v.title, LIMITS.title);
+  const timing = optionalTiming(v);
+  if (!b || !title || !timing || !isISODate(v.date) || typeof v.done !== 'boolean') return null;
+  const notes = text(v.notes, LIMITS.notes);
+  return {...b, title, date: v.date, done: v.done, ...timing, ...(notes ? {notes} : {})};
+}
+
+function toCheck(v: Raw, id: string): HabitCheck | null {
+  const b = base(v, id);
+  if (!b || typeof v.habitId !== 'string' || !isISODate(v.date) || typeof v.done !== 'boolean') return null;
+  if (id !== checkId(v.habitId, v.date)) return null;
+  return {...b, habitId: v.habitId, date: v.date, done: v.done};
+}
+
+function pick<T>(table: unknown, parse: (v: Raw, id: string) => T | null): Record<string, T> {
+  const out: Record<string, T> = {};
+  if (!table || typeof table !== 'object') return out;
+  for (const [id, v] of Object.entries(table)) {
+    if (id.length > 140 || !v || typeof v !== 'object') continue;
+    const rec = parse(v as Raw, id);
+    if (rec) out[id] = rec;
+  }
+  return out;
+}
+
+/**
+ * Rebuilds a state from untrusted JSON: known fields only, long text
+ * clipped, structurally broken records dropped.
+ */
+export function sanitizeState(raw: unknown): AppState {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Raw;
+  return {
+    habits: pick(r.habits, toHabit),
+    tasks: pick(r.tasks, toTask),
+    checks: pick(r.checks, toCheck),
   };
 }
 
@@ -120,8 +195,9 @@ export const tasksOn = (s: AppState, date: ISODate) =>
     .filter(t => !t.deleted && t.date === date)
     .sort((a, b) => (a.time ?? '99').localeCompare(b.time ?? '99') || a.title.localeCompare(b.title));
 
+/** Due on a weekday it is scheduled for, from its start date on. */
 export const isDueOn = (h: Habit, date: ISODate) =>
-  h.days.includes(weekdayOf(date));
+  date >= h.startDate && h.days.includes(weekdayOf(date));
 
 export const habitsDueOn = (s: AppState, date: ISODate) =>
   liveHabits(s).filter(h => isDueOn(h, date));
@@ -139,8 +215,7 @@ export function isChecked(s: AppState, habitId: string, date: ISODate): boolean 
 export function currentStreak(s: AppState, h: Habit, today: ISODate): number {
   let streak = 0;
   let date = today;
-  const floor = addDays(toISODate(new Date(h.createdAt)), -1);
-  for (let i = 0; i < 3660 && date > floor; i++, date = addDays(date, -1)) {
+  for (let i = 0; i < 3660 && date >= h.startDate; i++, date = addDays(date, -1)) {
     if (!isDueOn(h, date)) continue;
     if (isChecked(s, h.id, date)) streak++;
     else if (date !== today) break;
