@@ -6,8 +6,8 @@ import {createHandler} from './http.ts';
 import {Storage} from './storage.ts';
 
 const password = process.env.APP_PASSWORD ?? '';
-if (password.length < 8) {
-  console.error('APP_PASSWORD must be set to at least 8 characters.');
+if (password.length < 8 || password.startsWith('change-me')) {
+  console.error('APP_PASSWORD must be set to your own value, at least 8 characters.');
   process.exit(1);
 }
 

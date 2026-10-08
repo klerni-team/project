@@ -100,11 +100,12 @@ export function createHandler(deps: AppDeps) {
   }
 
   function authorize(req: IncomingMessage) {
-    const forwarded = deps.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() : '';
+    // The proxy appends the address it saw, so the rightmost entry is the
+    // one a client cannot forge (nginx keeps client-sent entries on the left).
+    const forwarded = deps.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',').at(-1)!.trim() : '';
     const ip = forwarded || req.socket.remoteAddress || '?';
     const now = Date.now();
-    const f = fails.get(ip);
-    if (f && now - f.since > FAIL_WINDOW_MS) fails.delete(ip);
+    for (const [key, f] of fails) if (now - f.since > FAIL_WINDOW_MS) fails.delete(key);
     if ((fails.get(ip)?.count ?? 0) >= MAX_FAILS) {
       throw new HttpError(429, 'too many failed attempts, try again later');
     }
@@ -153,6 +154,9 @@ export function createHandler(deps: AppDeps) {
     let file = normalize(join(root, decodeURIComponent(path)));
     if (file !== root && !file.startsWith(root + sep)) throw new HttpError(404, 'not found');
     let info = await stat(file).catch(() => null);
+    // A missing hashed asset must 404: an HTML fallback served as a JS chunk
+    // would be cached by the service worker.
+    if (!info && path.startsWith('/assets/')) throw new HttpError(404, 'not found');
     if (!info || info.isDirectory()) {
       // SPA fallback: unknown paths get the app shell.
       file = join(root, 'index.html');

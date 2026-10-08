@@ -31,6 +31,8 @@ import {KEYS, load, save} from './storage.ts';
 export type SyncStatus = 'off' | 'syncing' | 'ok' | 'offline' | 'auth' | 'locked';
 
 interface SyncCursor {
+  /** Server data set the cursor belongs to. */
+  epoch: string;
   /** Server revision already pulled. */
   rev: number;
   /** Local edits stamped at or after this were not yet pushed. */
@@ -68,7 +70,7 @@ export function useStore(): Store {
 
 const SYNC_DEBOUNCE_MS = 800;
 const SYNC_INTERVAL_MS = 60_000;
-const FRESH_CURSOR: SyncCursor = {rev: 0, pushedAt: 0};
+const FRESH_CURSOR: SyncCursor = {epoch: '', rev: 0, pushedAt: 0};
 
 function useToday(): ISODate {
   const [today, setToday] = useState(() => toISODate(new Date()));
@@ -118,43 +120,52 @@ export function StoreProvider({children}: {children: ReactNode}) {
     setState(cur => mergeStates(cur, sanitizeState(changes)));
   }, []);
 
-  const runSync = useCallback(async (): Promise<void> => {
-    const pw = passwordRef.current;
-    if (!pw) return setSyncStatus('off');
-    // One sync at a time; a request during a sync queues exactly one more.
+  /** One push/pull round trip. Returns true when the cursor had to be reset. */
+  const syncOnce = useCallback(async (pw: string): Promise<boolean> => {
+    const snapshotAt = Date.now();
+    const sent = cursor.current;
+    const res = await syncState(pw, {since: sent.rev, changes: changedSince(stateRef.current, sent.pushedAt)});
+    if (passwordRef.current !== pw) return false; // password changed mid-flight
+    applyRemote(res.changes);
+    // A different data set (wiped volume, new server) or a rewound one
+    // (restored backup): our pushed records may be missing there.
+    const reset = sent.epoch !== '' && (res.epoch !== sent.epoch || res.rev < sent.rev);
+    cursor.current = reset ? {...FRESH_CURSOR, epoch: res.epoch} : {epoch: res.epoch, rev: res.rev, pushedAt: snapshotAt};
+    save(KEYS.sync, cursor.current);
+    return reset;
+  }, [applyRemote]);
+
+  /**
+   * Pushes local edits and pulls remote ones. A call during a running sync
+   * queues one more pass and resolves only after it, so a caller that
+   * awaits it knows its own edits reached the server.
+   */
+  const runSync = useCallback((): Promise<void> => {
     if (inFlight.current) {
       again.current = true;
       return inFlight.current;
     }
-    const run = (async () => {
-      setSyncStatus('syncing');
-      const snapshotAt = Date.now();
-      try {
-        const res = await syncState(pw, {
-          since: cursor.current.rev,
-          changes: changedSince(stateRef.current, cursor.current.pushedAt),
-        });
-        if (passwordRef.current !== pw) return; // password changed mid-flight
-        applyRemote(res.changes);
-        cursor.current = {rev: res.rev, pushedAt: snapshotAt};
-        save(KEYS.sync, cursor.current);
-        setSyncStatus('ok');
-      } catch (err) {
-        const status = err instanceof ApiError ? err.status : 0;
-        setSyncStatus(status === 401 ? 'auth' : status === 429 ? 'locked' : 'offline');
-      }
-    })();
-    inFlight.current = run;
-    try {
-      await run;
-    } finally {
+    const loop = (async () => {
+      do {
+        again.current = false;
+        const pw = passwordRef.current;
+        if (!pw) return setSyncStatus('off');
+        setSyncStatus('syncing');
+        try {
+          if (await syncOnce(pw)) again.current = true;
+          setSyncStatus('ok');
+        } catch (err) {
+          const status = err instanceof ApiError ? err.status : 0;
+          setSyncStatus(status === 401 ? 'auth' : status === 429 ? 'locked' : 'offline');
+          return;
+        }
+      } while (again.current);
+    })().finally(() => {
       inFlight.current = null;
-    }
-    if (again.current) {
-      again.current = false;
-      await runSync();
-    }
-  }, [applyRemote]);
+    });
+    inFlight.current = loop;
+    return loop;
+  }, [syncOnce]);
 
   /** Background sync: skipped while the password is known to be wrong or locked out. */
   const autoSync = useCallback(() => {
@@ -207,8 +218,19 @@ export function StoreProvider({children}: {children: ReactNode}) {
       importBackup: s => edit(cur => mergeStates(cur, restamp(s, Date.now()))),
       toggleHabit: (habitId, date) =>
         edit(s => setCheck(s, habitId, date, !isChecked(s, habitId, date))),
+      // Forms own their fields; `done` and deletion may have changed elsewhere
+      // while the sheet was open, so those come from the current record.
       saveTask: ({id, ...rest}) =>
-        edit(s => upsertTask(s, {...rest, id: id ?? newId(), updatedAt: Date.now()})),
+        edit(s => {
+          const cur = id ? s.tasks[id] : undefined;
+          return upsertTask(s, {
+            ...rest,
+            id: id ?? newId(),
+            done: cur ? cur.done : rest.done,
+            ...(cur?.deleted ? {deleted: true} : {}),
+            updatedAt: Date.now(),
+          });
+        }),
       toggleTask: id =>
         edit(s => {
           const t = s.tasks[id];
@@ -222,6 +244,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
           return upsertHabit(s, {
             ...rest,
             id: id ?? newId(),
+            ...(prev?.deleted ? {deleted: true} : {}),
             startDate: prev?.startDate ?? today,
             createdAt: prev?.createdAt ?? now,
             updatedAt: now,

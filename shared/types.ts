@@ -67,6 +67,8 @@ export interface SyncRequest {
 
 /** Records the server changed after `since`, and the new cursor. */
 export interface SyncResponse {
+  /** Changes when the server's data file is new; clients then resend everything. */
+  epoch: string;
   rev: number;
   changes: AppState;
 }

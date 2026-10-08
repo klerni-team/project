@@ -1,3 +1,4 @@
+import {randomUUID} from 'node:crypto';
 import {mkdir, readFile, rename, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {mergeStates, sanitizeState, TABLES} from '../shared/state.ts';
@@ -6,6 +7,11 @@ import {emptyState, type AppState, type BaseRecord} from '../shared/types.ts';
 type Revs = Record<(typeof TABLES)[number], Record<string, number>>;
 
 interface Db {
+  /**
+   * Identity of this data set. A new file (fresh server, wiped volume) gets
+   * a new epoch, which tells clients their cursors are meaningless here.
+   */
+  epoch: string;
   state: AppState;
   /** Server-side revision of each record, so devices can pull only what changed. */
   revs: Revs;
@@ -26,7 +32,8 @@ function parseDb(raw: unknown): Db {
       revs[t][id] = typeof v === 'number' ? v : rev;
     }
   }
-  return {state, revs, rev};
+  const epoch = typeof r.epoch === 'string' && r.epoch ? r.epoch : randomUUID();
+  return {epoch, state, revs, rev};
 }
 
 /**
@@ -51,7 +58,7 @@ export class Storage {
       this.db = parseDb(JSON.parse(await readFile(this.file, 'utf8')));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-      this.db = {state: emptyState(), revs: emptyRevs(), rev: 0};
+      this.db = {epoch: randomUUID(), state: emptyState(), revs: emptyRevs(), rev: 0};
     }
     return this.db;
   }
@@ -87,13 +94,13 @@ export class Storage {
           (written[t] as Record<string, BaseRecord>)[id] = rec;
         }
       }
-      if (rev !== db.rev) await this.save({state: next, revs, rev});
+      if (rev !== db.rev) await this.save({epoch: db.epoch, state: next, revs, rev});
       return written;
     });
   }
 
-  /** Records with a revision above `since`, plus the current revision. */
-  changesSince(since: number): Promise<{rev: number; changes: AppState}> {
+  /** Records with a revision above `since`, plus the current revision and epoch. */
+  changesSince(since: number): Promise<{epoch: string; rev: number; changes: AppState}> {
     return this.serial(async () => {
       const db = await this.load();
       // A cursor ahead of the server means the data file was reset or
@@ -105,7 +112,7 @@ export class Storage {
           if (r > from) (changes[t] as Record<string, BaseRecord>)[id] = db.state[t][id];
         }
       }
-      return {rev: db.rev, changes};
+      return {epoch: db.epoch, rev: db.rev, changes};
     });
   }
 

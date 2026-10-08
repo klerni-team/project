@@ -1,5 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import {mkdtemp, rm} from 'node:fs/promises';
+import {mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {createServer, type Server} from 'node:http';
 import type {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
@@ -191,6 +191,46 @@ describe('http', () => {
     expect((await new Storage(dir).read()).tasks.t1.title).toBe('Отчёт');
     // A device that has never synced gets everything.
     expect(Object.keys((await sync(0, emptyState())).changes.tasks)).toEqual(['t1']);
+  });
+
+  it('starts a new epoch when the data file is replaced', async () => {
+    await start(null);
+    const first = await sync(0, upsertTask(emptyState(), task()));
+    await new Promise(r => server!.close(r));
+    server = null;
+    await rm(join(dir, 'state.json'));
+    await start(null);
+    const after = await sync(first.rev, emptyState());
+    expect(after.epoch).not.toBe(first.epoch);
+    expect(after.rev).toBe(0);
+  });
+
+  it('locks out by the proxy-appended (rightmost) forwarded address', async () => {
+    if (server) await new Promise(r => server!.close(r));
+    storage = new Storage(dir);
+    server = createServer(createHandler({storage, password: 'secret-pass', agent: null, staticDir: null, trustProxy: true}));
+    await new Promise<void>(r => server!.listen(0, '127.0.0.1', r));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const attempt = (spoof: number) =>
+      fetch(`${base}/api/sync`, {
+        method: 'POST',
+        headers: {authorization: 'Bearer wrong', 'x-forwarded-for': `10.0.0.${spoof}, 203.0.113.7`},
+        body: '{}',
+      });
+    for (let i = 0; i < 20; i++) expect((await attempt(i)).status).toBe(401);
+    expect((await attempt(99)).status).toBe(429);
+  });
+
+  it('404s a missing hashed asset instead of serving the app shell', async () => {
+    const dist = await mkdtemp(join(tmpdir(), 'dist-'));
+    await writeFile(join(dist, 'index.html'), '<!doctype html>');
+    if (server) await new Promise(r => server!.close(r));
+    server = createServer(createHandler({storage: new Storage(dir), password: 'secret-pass', agent: null, staticDir: dist}));
+    await new Promise<void>(r => server!.listen(0, '127.0.0.1', r));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    expect((await fetch(`${base}/assets/gone-123.js`)).status).toBe(404);
+    expect((await fetch(`${base}/habits`)).status).toBe(200);
+    await rm(dist, {recursive: true, force: true});
   });
 
   it('clamps future timestamps on sync', async () => {

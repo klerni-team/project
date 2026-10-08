@@ -26,9 +26,12 @@ cp .env.example .env      # впишите DOMAIN, APP_PASSWORD, ANTHROPIC_API_K
 docker compose up -d --build
 ```
 
-Caddy сам получит сертификат. Данные хранятся в Docker-томе `app_data`. Бэкап на хост: `docker compose cp app:/data/state.json ./backup-state.json`. Резервную копию в JSON можно скачать и из приложения («Ещё» → «Скачать резервную копию»).
+Caddy сам получит сертификат. Данные хранятся в Docker-томе `app_data`.
 
-Без Docker: `npm ci && npm run build`, затем `APP_PASSWORD=... ANTHROPIC_API_KEY=... TRUST_PROXY=1 npm start` за любым reverse proxy с HTTPS. `TRUST_PROXY=1` ставьте только за прокси, иначе ограничение на неверные пароли можно обойти подменой `X-Forwarded-For`.
+- Бэкап: `docker compose cp app:/data/state.json ./backup-state.json`. JSON-копию можно скачать и из приложения («Ещё» → «Скачать резервную копию»).
+- Восстановление: `docker compose stop app && docker compose cp ./backup-state.json app:/data/state.json && docker compose start app`. Сервер держит данные в памяти, поэтому файл подменяйте только при остановленном приложении. Устройства сами заметят откат и заново отправят записи, которых нет в бэкапе.
+
+Без Docker: `npm ci && npm run build`, затем `HOST=127.0.0.1 APP_PASSWORD=... ANTHROPIC_API_KEY=... TRUST_PROXY=1 npm start` за reverse proxy с HTTPS (Caddy, nginx). `HOST=127.0.0.1` закрывает порт 8787 от прямого доступа по HTTP. `TRUST_PROXY=1` ставьте только когда сервер доступен лишь через прокси, иначе ограничение на неверные пароли можно обойти подменой `X-Forwarded-For`.
 
 ### Переменные окружения
 
