@@ -28,6 +28,7 @@ import {
 import {EVERY_DAY, type Challenge} from '../../shared/templates.ts';
 import type {AppState, BaseRecord, Habit, ISODate, Task} from '../../shared/types.ts';
 import {ApiError, syncState} from './api.ts';
+import {demoState, IS_DEMO} from './demo.ts';
 import {KEYS, load, save} from './storage.ts';
 
 /** `auth` and `locked` pause automatic sync until the password is re-entered. */
@@ -100,7 +101,10 @@ function restamp(s: AppState, now: number): AppState {
 }
 
 export function StoreProvider({children}: {children: ReactNode}) {
-  const [state, setState] = useState<AppState>(() => sanitizeState(load(KEYS.state, null)));
+  const [state, setState] = useState<AppState>(() => {
+    const stored = load<unknown>(KEYS.state, null);
+    return stored === null && IS_DEMO ? demoState() : sanitizeState(stored);
+  });
   const [password, setPasswordRaw] = useState(() => load(KEYS.password, ''));
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(password ? 'syncing' : 'off');
   const today = useToday();

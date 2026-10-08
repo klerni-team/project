@@ -16,6 +16,7 @@ import {HStack, StackItem, VStack} from '@astryxdesign/core/Stack';
 import {Heading} from '@astryxdesign/core/Text';
 import {Sparkles} from 'lucide-react';
 import {useChat} from '../lib/chat.tsx';
+import {IS_DEMO} from '../lib/demo.ts';
 import {useStore} from '../lib/store.tsx';
 
 const SUGGESTIONS: {label: string; prompt: string}[] = [
@@ -73,9 +74,13 @@ export function Agent({draft, onDraftConsumed}: {draft: string; onDraftConsumed:
           <LayoutContent>
             <EmptyState
               title="Агент работает через твой сервер"
-              description="Открой «Ещё» и введи пароль сервера. Ключ Claude хранится на сервере, а не в телефоне."
+              description={
+                IS_DEMO
+                  ? 'В демо-версии агента нет: он запускается на твоём сервере с ключом Claude. Остальное приложение работает прямо здесь.'
+                  : 'Открой «Ещё» и введи пароль сервера. Ключ Claude хранится на сервере, а не в телефоне.'
+              }
               icon={<Sparkles size={32} />}
-              actions={<Button label="Открыть настройки" variant="primary" href="#settings" />}
+              actions={IS_DEMO ? undefined : <Button label="Открыть настройки" variant="primary" href="#settings" />}
             />
           </LayoutContent>
         }

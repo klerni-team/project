@@ -11,6 +11,7 @@ import {toISODate} from '../../shared/dates.ts';
 import {sanitizeState} from '../../shared/state.ts';
 import {health} from '../lib/api.ts';
 import {useChat} from '../lib/chat.tsx';
+import {IS_DEMO} from '../lib/demo.ts';
 import {useStore, type SyncStatus} from '../lib/store.tsx';
 
 const STATUS: Record<SyncStatus, {label: string; variant: 'success' | 'warning' | 'error' | 'neutral' | 'accent'}> = {
@@ -78,6 +79,14 @@ export function SettingsScreen() {
       content={
         <LayoutContent>
           <VStack gap={6}>
+            {IS_DEMO && (
+              <Banner
+                status="info"
+                title="Демо-версия"
+                description="Привычки и задачи для примера, всё хранится только в этом браузере. Синхронизация и агент работают, когда приложение запущено на твоём сервере."
+                collapsible={false}
+              />
+            )}
             {notice && (
               <Banner status={notice.status} title={notice.text} isDismissable onDismiss={() => setNotice(null)} collapsible={false} />
             )}
