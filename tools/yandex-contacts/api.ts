@@ -36,7 +36,8 @@ export interface SearchParams {
   skip: number;
 }
 
-export type StopReason = 'quota' | 'rate' | 'budget' | 'error';
+/** `request`: the API rejected the request itself, so repeating it will not help. */
+export type StopReason = 'quota' | 'rate' | 'budget' | 'error' | 'request';
 
 /** The run cannot go on now, but what was collected is valid and a rerun resumes from the cache. */
 export class StopError extends Error {
@@ -150,6 +151,10 @@ export class YandexApi {
     }
     if (res.status === 403) throw new StopError('quota', 'API ответил 403: ключ неверный или исчерпана суточная квота');
     if (res.status === 429) throw new StopError('rate', 'API ответил 429: слишком много запросов');
+    if (res.status >= 400 && res.status < 500) {
+      const body = redact((await res.text().catch(() => '')).replace(/\s+/g, ' ').trim()).slice(0, 300);
+      throw new StopError('request', `API отклонил запрос (${res.status})${body ? `: ${body}` : ''}`);
+    }
     if (!res.ok) throw new StopError('error', `API ответил ${res.status}`);
     let json: unknown;
     let page: SearchPage;

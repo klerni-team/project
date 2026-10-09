@@ -45,12 +45,12 @@ const feature = (o: FakeOrg) => ({
  * like the real API, returns nothing past `cap` results. The page at
  * `shortAt` comes back one feature short.
  */
-function fakeYandex(orgs: FakeOrg[], opts: {cap?: number; failFrom?: number; status?: number; shortAt?: number} = {}) {
+function fakeYandex(orgs: FakeOrg[], opts: {cap?: number; failFrom?: number; status?: number; body?: string; shortAt?: number} = {}) {
   const calls: URLSearchParams[] = [];
   const fakeFetch = (async (input: string | URL) => {
     const q = new URL(String(input)).searchParams;
     calls.push(q);
-    if (opts.failFrom !== undefined && calls.length >= opts.failFrom) return new Response('{}', {status: opts.status ?? 403});
+    if (opts.failFrom !== undefined && calls.length >= opts.failFrom) return new Response(opts.body ?? '{}', {status: opts.status ?? 403});
     if (q.get('type') === 'geo') {
       return Response.json(collection(1, [{type: 'Feature', geometry: {type: 'Point', coordinates: [49.1, 55.8]}, properties: {name: q.get('text'), boundedBy: CITY}}]));
     }
@@ -337,6 +337,29 @@ describe('main', () => {
       expect(full.map(r => r[8])).toEqual(['ID Яндекса', '1', '2']);
     });
   }
+
+  it('exits 1 on a rejected request, showing the body without the key', async () => {
+    const body = JSON.stringify({statusCode: 400, error: 'Bad Request', message: `Invalid parameter: results, apikey=${KEY}`});
+    const rejected = fakeYandex(orgs, {failFrom: 5, status: 400, body});
+    const res = await run(['--city', 'Казань', '--niche', '01-03', '--niche', '01-04', '--page-size', '500'], rejected.fetch);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('API отклонил запрос (400)');
+    expect(res.err).toContain('Invalid parameter: results, apikey=***');
+    expect(res.err).toContain('--page-size');
+    expect(res.err + res.out).not.toContain(KEY);
+    expect(res.out).toContain('Не завершены ниши: 01-04.');
+    expect(await readCsv(join(dir, 'out', '01-03 Кровельные и фасадные работы.csv'))).toHaveLength(2);
+    const partial = await readCsv(join(dir, 'out', '01-04 Электрики, сантехники, отопление и водоснабжение.csv'));
+    expect(partial.map(r => r[8])).toEqual(['ID Яндекса', '1']);
+  });
+
+  it('exits 2 on a server error so a rerun can retry', async () => {
+    const failing = fakeYandex(orgs, {failFrom: 2, status: 500, body: 'oops'});
+    const res = await run(['--city', 'Казань', '--niche', '01-03'], failing.fetch);
+    expect(res.code).toBe(2);
+    expect(res.err).toContain('API ответил 500');
+    expect(res.err).toContain('Проверьте сеть. Запустите ту же команду снова');
+  });
 
   it('stops at --max-requests and continues on the next run', async () => {
     const yandex = fakeYandex(orgs);

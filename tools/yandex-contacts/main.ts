@@ -29,7 +29,7 @@ export interface MainDeps {
   limits?: SearchLimits;
 }
 
-/** Exit codes: 0 done, 1 bad usage or failure, 2 stopped early (rerun to continue). */
+/** Exit codes: 0 done, 1 bad usage, failure or rejected request, 2 stopped early (rerun to continue). */
 export async function main(argv: string[], deps: MainDeps): Promise<number> {
   let args;
   try {
@@ -124,8 +124,8 @@ export async function main(argv: string[], deps: MainDeps): Promise<number> {
     deps.log('Готово.');
     return 0;
   }
-  deps.error(`Остановлено: ${stop.message}.\n${NEXT_STEP[stop.reason]}`);
-  return 2;
+  deps.error(`Остановлено: ${stop.message}\n${NEXT_STEP[stop.reason]}`);
+  return stop.reason === 'request' ? 1 : 2;
 }
 
 const RERUN = 'Запустите ту же команду снова — уже полученные ответы возьмутся из кеша, сбор продолжится с места остановки.';
@@ -135,6 +135,7 @@ const NEXT_STEP: Record<StopError['reason'], string> = {
   rate: `Подождите и увеличьте паузу --delay. ${RERUN}`,
   budget: RERUN,
   error: `Проверьте сеть. ${RERUN}`,
+  request: 'Проверьте параметры (--page-size, --bbox) и ключ API: повтор той же команды снова получит эту ошибку. Уже собранное записано.',
 };
 
 function count(v: string | undefined, fallback: number): number | null {
