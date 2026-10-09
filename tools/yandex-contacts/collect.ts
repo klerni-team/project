@@ -1,6 +1,6 @@
 import {mkdir, rename, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {StopError, type BBox, type Org, type YandexApi} from './api.ts';
+import {StopError, type BBox, type Org, type SearchPage, type YandexApi} from './api.ts';
 import {nicheFileName, orgRow, toCsv, type Found} from './csv.ts';
 import type {Niche} from './niches.ts';
 
@@ -30,31 +30,40 @@ export function splitBBox([[x1, y1], [x2, y2]]: BBox): BBox[] {
 }
 
 /**
- * Feeds `add` every organization `text` finds in `bbox`. Areas where the
- * count hits the API ceiling are quartered and searched again. Returns false
- * when the list may be cut: an area at maximum depth still hit the ceiling,
- * or a page came back empty before `found` was reached.
+ * Feeds `add` every organization `text` finds in `bbox`. Areas that hit the
+ * API ceiling are quartered and searched again: when `found` reaches `cap`,
+ * and when a later page comes back empty or rejected before `found` (the real
+ * ceiling is lower). Returns false when the list may be cut: such an area was
+ * already at maximum depth, or even the first page was empty.
  */
 export async function searchArea(
   api: YandexApi, text: string, bbox: BBox, add: (orgs: Org[]) => void, limits: SearchLimits = {}, depth = 0,
 ): Promise<boolean> {
   const {pageSize = PAGE_SIZE, cap = RESULT_CAP, maxDepth = 4} = limits;
-  const first = await api.search({type: 'biz', text, bbox, results: pageSize, skip: 0});
-  add(first.orgs);
-  if (first.found >= cap && depth < maxDepth) {
+  const split = async () => {
+    if (depth >= maxDepth) return false;
     let complete = true;
     for (const part of splitBBox(bbox)) {
       if (!await searchArea(api, text, part, add, limits, depth + 1)) complete = false;
     }
     return complete;
-  }
+  };
+  const first = await api.search({type: 'biz', text, bbox, results: pageSize, skip: 0});
+  add(first.orgs);
+  if (first.found >= cap && depth < maxDepth) return split();
   const end = Math.min(first.found, cap);
   if (!first.count && end > 0) return false;
   // A short page is not the end: only `found` or an empty page is.
   for (let skip = pageSize; skip < end; skip += pageSize) {
-    const page = await api.search({type: 'biz', text, bbox, results: pageSize, skip});
+    let page: SearchPage | null = null;
+    try {
+      page = await api.search({type: 'biz', text, bbox, results: Math.min(pageSize, end - skip), skip});
+    } catch (err) {
+      // The first page went through with the same key and page size, so the offset is what the API refused.
+      if (!(err instanceof StopError && err.reason === 'request')) throw err;
+    }
+    if (!page?.count) return split();
     add(page.orgs);
-    if (!page.count) return false;
   }
   return first.found < cap;
 }

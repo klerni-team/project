@@ -45,12 +45,13 @@ const feature = (o: FakeOrg) => ({
  * like the real API, returns nothing past `cap` results. The page at
  * `shortAt` comes back one feature short.
  */
-function fakeYandex(orgs: FakeOrg[], opts: {cap?: number; failFrom?: number; status?: number; body?: string; shortAt?: number} = {}) {
+function fakeYandex(orgs: FakeOrg[], opts: {cap?: number; failFrom?: number; status?: number; body?: string; shortAt?: number; rejectSkip?: boolean} = {}) {
   const calls: URLSearchParams[] = [];
   const fakeFetch = (async (input: string | URL) => {
     const q = new URL(String(input)).searchParams;
     calls.push(q);
     if (opts.failFrom !== undefined && calls.length >= opts.failFrom) return new Response(opts.body ?? '{}', {status: opts.status ?? 403});
+    if (opts.rejectSkip && q.get('skip') !== '0') return new Response('{"message":"skip too large"}', {status: 400});
     if (q.get('type') === 'geo') {
       return Response.json(collection(1, [{type: 'Feature', geometry: {type: 'Point', coordinates: [49.1, 55.8]}, properties: {name: q.get('text'), boundedBy: CITY}}]));
     }
@@ -166,12 +167,46 @@ describe('searchArea', () => {
     expect(res.rows).toHaveLength(299);
   });
 
-  it('reports a cut list when pages run out before found', async () => {
+  // 40×20 grid off the quarter borders: no quarter holds more than 200.
+  const spread = (tag: string, [[x1, y1], [x2, y2]]: BBox, nx: number, ny: number): FakeOrg[] =>
+    Array.from({length: nx * ny}, (_, k) => ({
+      id: `s${k}`, tags: [tag],
+      lon: x1 + (x2 - x1) * ((k % nx) + 0.5) / nx,
+      lat: y1 + (y2 - y1) * (Math.floor(k / nx) + 0.5) / ny,
+    }));
+
+  it('quarters an area whose pages run out before found', async () => {
+    const {fetch, calls} = fakeYandex(spread('кафе', box, 40, 20), {cap: 500});
+    const res = new NicheResults();
+    expect(await searchArea(api(fetch), 'кафе', box, orgs => res.add(orgs, 'кафе'))).toBe(true);
+    expect(res.rows).toHaveLength(800);
+    expect(calls.filter(q => q.get('bbox') === '0,0~1,1').map(q => q.get('skip')).at(-1)).toBe('500');
+    expect(calls.some(q => q.get('bbox') === '0,0~0.5,0.5')).toBe(true);
+  });
+
+  it('reports a cut list when pages run out at maximum depth', async () => {
     const {fetch, calls} = fakeYandex(pile(800, 'кафе'), {cap: 500});
     const res = new NicheResults();
-    expect(await searchArea(api(fetch), 'кафе', box, orgs => res.add(orgs, 'кафе'))).toBe(false);
+    expect(await searchArea(api(fetch), 'кафе', box, orgs => res.add(orgs, 'кафе'), {maxDepth: 0})).toBe(false);
     expect(res.rows).toHaveLength(500);
     expect(calls.map(q => q.get('skip')).at(-1)).toBe('500');
+  });
+
+  it('treats a rejected later page as the ceiling', async () => {
+    const {fetch} = fakeYandex(spread('кафе', box, 4, 4), {rejectSkip: true});
+    const res = new NicheResults();
+    const add = (orgs: Org[]) => res.add(orgs, 'кафе');
+    expect(await searchArea(api(fetch), 'кафе', box, add, {pageSize: 10})).toBe(true);
+    expect(res.rows).toHaveLength(16);
+    expect(await searchArea(api(fetch), 'кафе', box, add, {pageSize: 10, maxDepth: 0})).toBe(false);
+  });
+
+  it('trims the last page to found', async () => {
+    const {fetch, calls} = fakeYandex(pile(999, 'кафе'));
+    const res = new NicheResults();
+    expect(await searchArea(api(fetch), 'кафе', box, orgs => res.add(orgs, 'кафе'), {pageSize: 300})).toBe(true);
+    expect(calls.map(q => [q.get('skip'), q.get('results')])).toEqual([['0', '300'], ['300', '300'], ['600', '300'], ['900', '99']]);
+    expect(res.rows).toHaveLength(999);
   });
 
   it('reports a cut list when the depth limit is reached', async () => {
@@ -387,16 +422,33 @@ describe('main', () => {
     expect(yandex.calls).toHaveLength(0);
   });
 
-  it('marks a niche truncated when pages run out early, with a custom page size', async () => {
-    const many = Array.from({length: 800}, (_, i) => ({id: `e${i}`, lon: 49.2, lat: 55.8, tags: ['электрик']}));
+  it('marks a niche truncated when pages run out at maximum depth, with a custom page size', async () => {
+    // All in one spot off the quarter borders: quartering never thins them out.
+    const many = Array.from({length: 800}, (_, i) => ({id: `e${i}`, lon: 49.21, lat: 55.81, tags: ['электрик']}));
     const yandex = fakeYandex(many, {cap: 500});
     const res = await run(['--city', 'Казань', '--niche', '01-04', '--page-size', '100'], yandex.fetch);
     expect(res.code).toBe(0);
     expect(res.out).toContain('Внимание: в нишах 01-04');
     const electric = yandex.calls.filter(q => q.get('text') === 'электрик');
-    expect(electric.map(q => q.get('skip'))).toEqual(['0', '100', '200', '300', '400', '500']);
+    expect(electric.slice(0, 6).map(q => q.get('skip'))).toEqual(['0', '100', '200', '300', '400', '500']);
+    expect(electric.length).toBeGreaterThan(6);
     expect(electric.every(q => q.get('results') === '100')).toBe(true);
     expect(await readCsv(join(dir, 'out', '01-04 Электрики, сантехники, отопление и водоснабжение.csv'))).toHaveLength(501);
+  });
+
+  it('keeps going when a later page is rejected', async () => {
+    const [[x1, y1], [x2, y2]] = CITY;
+    const grid = Array.from({length: 16}, (_, k) => ({
+      id: `g${k}`, tags: ['электрик', 'установка окон'],
+      lon: x1 + (x2 - x1) * ((k % 4) + 0.5) / 4, lat: y1 + (y2 - y1) * (Math.floor(k / 4) + 0.5) / 4,
+    }));
+    const yandex = fakeYandex(grid, {rejectSkip: true});
+    const res = await run(['--city', 'Казань', '--niche', '01-04', '--niche', '01-05', '--page-size', '10'], yandex.fetch);
+    expect(res.err).toBe('');
+    expect(res.code).toBe(0);
+    expect(res.out).not.toContain('Внимание');
+    expect(await readCsv(join(dir, 'out', '01-04 Электрики, сантехники, отопление и водоснабжение.csv'))).toHaveLength(17);
+    expect(await readCsv(join(dir, 'out', '01-05 Установка окон, дверей, натяжных потолков.csv'))).toHaveLength(17);
   });
 
   it('rejects bad arguments', async () => {
