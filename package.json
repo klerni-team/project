@@ -11,6 +11,7 @@
     "start": "node server/index.ts",
     "typecheck": "tsc -b",
     "test": "vitest run",
+    "contacts": "node --env-file-if-exists=.env tools/yandex-contacts/cli.ts",
     "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs"
   },
   "dependencies": {

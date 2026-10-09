@@ -16,5 +16,5 @@
     "noUnusedParameters": true,
     "skipLibCheck": true
   },
-  "include": ["server", "shared", "vite.config.ts", "vitest.config.ts"]
+  "include": ["server", "shared", "tools", "vite.config.ts", "vitest.config.ts"]
 }
