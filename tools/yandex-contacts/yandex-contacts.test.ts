@@ -20,8 +20,8 @@ interface FakeOrg {
   name?: string;
 }
 
-const collection = (found: number, features: unknown[]) =>
-  ({type: 'FeatureCollection', properties: {ResponseMetaData: {SearchResponse: {found}}}, features});
+const collection = (found: number | null, features: unknown[]) =>
+  ({type: 'FeatureCollection', properties: {ResponseMetaData: {SearchResponse: found === null ? {} : {found}}}, features});
 
 const feature = (o: FakeOrg) => ({
   type: 'Feature',
@@ -43,9 +43,13 @@ const feature = (o: FakeOrg) => ({
 /**
  * Stands in for search-maps.yandex.ru: filters orgs by text and bbox and,
  * like the real API, returns nothing past `cap` results. The page at
- * `shortAt` comes back one feature short.
+ * `shortAt` comes back one feature short; `extraFound` overstates `found`;
+ * `noFound` leaves it out; past `clampAt` the last page before it repeats.
  */
-function fakeYandex(orgs: FakeOrg[], opts: {cap?: number; failFrom?: number; status?: number; body?: string; shortAt?: number; rejectSkip?: boolean} = {}) {
+function fakeYandex(orgs: FakeOrg[], opts: {
+  cap?: number; failFrom?: number; status?: number; body?: string; shortAt?: number; rejectSkip?: boolean;
+  extraFound?: number; noFound?: boolean; clampAt?: number;
+} = {}) {
   const calls: URLSearchParams[] = [];
   const fakeFetch = (async (input: string | URL) => {
     const q = new URL(String(input)).searchParams;
@@ -57,9 +61,12 @@ function fakeYandex(orgs: FakeOrg[], opts: {cap?: number; failFrom?: number; sta
     }
     const [[x1, y1], [x2, y2]] = q.get('bbox')!.split('~').map(c => c.split(',').map(Number));
     const hits = orgs.filter(o => o.tags.includes(q.get('text')!) && o.lon >= x1 && o.lon <= x2 && o.lat >= y1 && o.lat <= y2);
-    const skip = Number(q.get('skip'));
-    const end = Math.min(skip + Number(q.get('results')) - (skip === opts.shortAt ? 1 : 0), opts.cap ?? 1000);
-    return Response.json(collection(hits.length, hits.slice(skip, end).map(feature)));
+    const results = Number(q.get('results'));
+    let skip = Number(q.get('skip'));
+    if (opts.clampAt !== undefined && skip >= opts.clampAt) skip = opts.clampAt - results;
+    const end = Math.min(skip + results - (skip === opts.shortAt ? 1 : 0), opts.cap ?? 1000);
+    const found = opts.noFound ? null : hits.length + (opts.extraFound ?? 0);
+    return Response.json(collection(found, hits.slice(skip, end).map(feature)));
   }) as typeof globalThis.fetch;
   return {fetch: fakeFetch, calls};
 }
@@ -199,6 +206,34 @@ describe('searchArea', () => {
     expect(await searchArea(api(fetch), 'кафе', box, add, {pageSize: 10})).toBe(true);
     expect(res.rows).toHaveLength(16);
     expect(await searchArea(api(fetch), 'кафе', box, add, {pageSize: 10, maxDepth: 0})).toBe(false);
+  });
+
+  it('stops at an empty page after a short one when found is overstated', async () => {
+    const {fetch, calls} = fakeYandex(pile(20, 'кафе'), {extraFound: 60});
+    const res = new NicheResults();
+    expect(await searchArea(api(fetch), 'кафе', box, orgs => res.add(orgs, 'кафе'))).toBe(true);
+    expect(calls.length).toBeLessThanOrEqual(2);
+    expect(calls.every(q => q.get('bbox') === '0,0~1,1')).toBe(true);
+    expect(res.rows).toHaveLength(20);
+  });
+
+  it('quarters an area when the API repeats a page past its ceiling', async () => {
+    const {fetch, calls} = fakeYandex(spread('кафе', box, 30, 30), {clampAt: 500});
+    const res = new NicheResults();
+    expect(await searchArea(api(fetch), 'кафе', box, orgs => res.add(orgs, 'кафе'))).toBe(true);
+    expect(calls.some(q => q.get('bbox') === '0,0~0.5,0.5')).toBe(true);
+    expect(res.rows).toHaveLength(900);
+    const cut = fakeYandex(spread('кафе', box, 30, 30), {clampAt: 500});
+    expect(await searchArea(api(cut.fetch, {cacheDir: join(dir, 'cache2')}), 'кафе', box, () => {}, {maxDepth: 0})).toBe(false);
+  });
+
+  it('pages until a short page when found is missing', async () => {
+    const {fetch, calls} = fakeYandex(pile(300, 'кафе'), {noFound: true});
+    const res = new NicheResults();
+    expect(await searchArea(api(fetch), 'кафе', box, orgs => res.add(orgs, 'кафе'))).toBe(true);
+    expect(res.rows).toHaveLength(300);
+    expect(calls.map(q => q.get('skip'))).toEqual(['0', '50', '100', '150', '200', '250', '300']);
+    expect(parseResponse(collection(null, [])).found).toBeNull();
   });
 
   it('trims the last page to found', async () => {

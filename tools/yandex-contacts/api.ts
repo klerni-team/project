@@ -20,7 +20,8 @@ export interface Org {
 }
 
 export interface SearchPage {
-  found: number;
+  /** null when the response does not say. */
+  found: number | null;
   /** Features in the response, including any without company data. */
   count: number;
   orgs: Org[];
@@ -97,7 +98,7 @@ export function parseResponse(json: unknown): SearchPage {
   }
   const bounded = arr(obj(obj(root.features[0]).properties).boundedBy).map(point);
   const bounds: BBox | null = bounded.length === 2 && bounded[0] && bounded[1] ? [bounded[0], bounded[1]] : null;
-  return {found: num(meta.found) ?? orgs.length, count: root.features.length, orgs, bounds};
+  return {found: num(meta.found), count: root.features.length, orgs, bounds};
 }
 
 export interface ApiOptions {

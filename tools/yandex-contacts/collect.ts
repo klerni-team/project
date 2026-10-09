@@ -29,12 +29,17 @@ export function splitBBox([[x1, y1], [x2, y2]]: BBox): BBox[] {
   ];
 }
 
+export const orgKey = (o: Org) => o.id || `${o.name}|${o.address}`;
+
 /**
  * Feeds `add` every organization `text` finds in `bbox`. Areas that hit the
  * API ceiling are quartered and searched again: when `found` reaches `cap`,
- * and when a later page comes back empty or rejected before `found` (the real
- * ceiling is lower). Returns false when the list may be cut: such an area was
- * already at maximum depth, or even the first page was empty.
+ * and when, before `found` is reached, a page is rejected, a page after a
+ * full one comes back empty, or a page holds nothing new (the real ceiling
+ * is lower). Without `found`, pages are read until a short or empty one, and
+ * reaching `cap` counts as the ceiling. Returns false when the list may be
+ * cut: such an area was already at maximum depth, or even the first page was
+ * empty.
  */
 export async function searchArea(
   api: YandexApi, text: string, bbox: BBox, add: (orgs: Org[]) => void, limits: SearchLimits = {}, depth = 0,
@@ -50,22 +55,35 @@ export async function searchArea(
   };
   const first = await api.search({type: 'biz', text, bbox, results: pageSize, skip: 0});
   add(first.orgs);
-  if (first.found >= cap && depth < maxDepth) return split();
-  const end = Math.min(first.found, cap);
-  if (!first.count && end > 0) return false;
-  // A short page is not the end: only `found` or an empty page is.
+  const {found} = first;
+  if (found !== null && found >= cap && depth < maxDepth) return split();
+  // An empty first page is complete only if nothing was found.
+  if (!first.count) return !found;
+  const end = Math.min(found ?? cap, cap);
+  const seen = new Set(first.orgs.map(orgKey));
+  let full = first.count >= pageSize;
+  if (found === null && !full) return true;
   for (let skip = pageSize; skip < end; skip += pageSize) {
-    let page: SearchPage | null = null;
+    const results = Math.min(pageSize, end - skip);
+    let page: SearchPage;
     try {
-      page = await api.search({type: 'biz', text, bbox, results: Math.min(pageSize, end - skip), skip});
+      page = await api.search({type: 'biz', text, bbox, results, skip});
     } catch (err) {
       // The first page went through with the same key and page size, so the offset is what the API refused.
       if (!(err instanceof StopError && err.reason === 'request')) throw err;
+      return split();
     }
-    if (!page?.count) return split();
     add(page.orgs);
+    // Empty after a short page: `found` was overstated and the data simply ended.
+    if (!page.count) return full && found !== null ? split() : true;
+    const fresh = page.orgs.map(orgKey).filter(k => !seen.has(k));
+    // Nothing new: past its real ceiling the API repeats a page instead of moving on.
+    if (!fresh.length) return split();
+    for (const k of fresh) seen.add(k);
+    full = page.count >= results;
+    if (found === null && !full) return true;
   }
-  return first.found < cap;
+  return found === null ? split() : found < cap;
 }
 
 /** Organizations of one niche, one entry per Yandex id. */
@@ -74,7 +92,7 @@ export class NicheResults {
 
   add(orgs: Org[], query: string) {
     for (const o of orgs) {
-      const key = o.id || `${o.name}|${o.address}`;
+      const key = orgKey(o);
       const seen = this.byKey.get(key);
       if (!seen) this.byKey.set(key, {...o, queries: [query]});
       else if (!seen.queries.includes(query)) seen.queries.push(query);
