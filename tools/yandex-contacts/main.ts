@@ -1,7 +1,7 @@
 import {join} from 'node:path';
 import {parseArgs} from 'node:util';
 import {formatBBox, parseBBox, StopError, YandexApi, type BBox} from './api.ts';
-import {collect, findCity, type SearchLimits} from './collect.ts';
+import {collect, findCity, MAX_PAGE_SIZE, PAGE_SIZE, type SearchLimits} from './collect.ts';
 import {safeFileName} from './csv.ts';
 import {selectNiches} from './niches.ts';
 
@@ -15,6 +15,7 @@ export const USAGE = `Сбор контактов организаций с Ян
   --bbox <lon1,lat1~lon2,lat2>  область поиска вместо границ города
   --delay <мс>           пауза между запросами к API (по умолчанию 500)
   --max-requests <N>     не больше N запросов к API за запуск (ответы из кеша не считаются)
+  --page-size <N>        результатов на запрос, 1..${MAX_PAGE_SIZE} (по умолчанию ${PAGE_SIZE})
   --api-key <ключ>       ключ API (по умолчанию YANDEX_SEARCH_API_KEY)
   --list                 показать ниши и выйти
 `;
@@ -41,6 +42,7 @@ export async function main(argv: string[], deps: MainDeps): Promise<number> {
         bbox: {type: 'string'},
         delay: {type: 'string'},
         'max-requests': {type: 'string'},
+        'page-size': {type: 'string'},
         'api-key': {type: 'string'},
         list: {type: 'boolean'},
         help: {type: 'boolean', short: 'h'},
@@ -89,6 +91,11 @@ export async function main(argv: string[], deps: MainDeps): Promise<number> {
     deps.error('--delay и --max-requests должны быть целыми числами ≥ 0');
     return 1;
   }
+  const pageSize = count(args['page-size'], PAGE_SIZE);
+  if (pageSize === null || pageSize < 1 || pageSize > MAX_PAGE_SIZE) {
+    deps.error(`--page-size должен быть целым числом от 1 до ${MAX_PAGE_SIZE}`);
+    return 1;
+  }
 
   const outDir = args.out ?? join('contacts', safeFileName(city));
   const api = new YandexApi({apiKey, cacheDir: join(outDir, '.cache'), fetch: deps.fetch, sleep: deps.sleep, delayMs, maxRequests});
@@ -96,10 +103,10 @@ export async function main(argv: string[], deps: MainDeps): Promise<number> {
   try {
     bbox ??= await findCity(api, city);
     deps.log(`${city}: область ${formatBBox(bbox)}, ниш ${niches.length}, папка ${outDir}`);
-    const result = await collect({api, bbox, niches, outDir, limits: deps.limits, log: deps.log});
+    const result = await collect({api, bbox, niches, outDir, limits: {...deps.limits, pageSize}, log: deps.log});
     stop = result.stop;
     if (result.truncated.length) {
-      deps.log(`\nВнимание: в нишах ${result.truncated.join(', ')} часть участков упёрлась в потолок выдачи API, список может быть неполным.`);
+      deps.log(`\nВнимание: в нишах ${result.truncated.join(', ')} API отдал не всё найденное (потолок выдачи или пустые страницы), список может быть неполным.`);
     }
     if (stop) {
       deps.log(`\nЗаписано файлов: ${result.files.length}. Не завершены ниши: ${result.unfinished.join(', ')}.`);

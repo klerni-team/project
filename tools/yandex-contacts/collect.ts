@@ -4,8 +4,15 @@ import {StopError, type BBox, type Org, type YandexApi} from './api.ts';
 import {nicheFileName, orgRow, toCsv, type Found} from './csv.ts';
 import type {Niche} from './niches.ts';
 
+/** Results per request unless --page-size says otherwise. */
+export const PAGE_SIZE = 50;
+/** Largest `results` the API documentation allows. */
+export const MAX_PAGE_SIZE = 500;
+/** The API returns at most about this many results for one query and area. */
+export const RESULT_CAP = 1000;
+
 export interface SearchLimits {
-  /** Results per request (API maximum is 50). */
+  /** Results per request. */
   pageSize?: number;
   /** The API returns at most this many results for one query and area. */
   cap?: number;
@@ -25,12 +32,13 @@ export function splitBBox([[x1, y1], [x2, y2]]: BBox): BBox[] {
 /**
  * Feeds `add` every organization `text` finds in `bbox`. Areas where the
  * count hits the API ceiling are quartered and searched again. Returns false
- * when an area at maximum depth still hit the ceiling, so the list may be cut.
+ * when the list may be cut: an area at maximum depth still hit the ceiling,
+ * or a page came back empty before `found` was reached.
  */
 export async function searchArea(
   api: YandexApi, text: string, bbox: BBox, add: (orgs: Org[]) => void, limits: SearchLimits = {}, depth = 0,
 ): Promise<boolean> {
-  const {pageSize = 50, cap = 1000, maxDepth = 4} = limits;
+  const {pageSize = PAGE_SIZE, cap = RESULT_CAP, maxDepth = 4} = limits;
   const first = await api.search({type: 'biz', text, bbox, results: pageSize, skip: 0});
   add(first.orgs);
   if (first.found >= cap && depth < maxDepth) {
@@ -41,11 +49,12 @@ export async function searchArea(
     return complete;
   }
   const end = Math.min(first.found, cap);
-  let count = first.count;
-  for (let skip = pageSize; count >= pageSize && skip < end; skip += pageSize) {
+  if (!first.count && end > 0) return false;
+  // A short page is not the end: only `found` or an empty page is.
+  for (let skip = pageSize; skip < end; skip += pageSize) {
     const page = await api.search({type: 'biz', text, bbox, results: pageSize, skip});
     add(page.orgs);
-    count = page.count;
+    if (!page.count) return false;
   }
   return first.found < cap;
 }

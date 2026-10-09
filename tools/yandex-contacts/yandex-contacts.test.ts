@@ -42,9 +42,10 @@ const feature = (o: FakeOrg) => ({
 
 /**
  * Stands in for search-maps.yandex.ru: filters orgs by text and bbox and,
- * like the real API, returns nothing past `cap` results.
+ * like the real API, returns nothing past `cap` results. The page at
+ * `shortAt` comes back one feature short.
  */
-function fakeYandex(orgs: FakeOrg[], opts: {cap?: number; failFrom?: number; status?: number} = {}) {
+function fakeYandex(orgs: FakeOrg[], opts: {cap?: number; failFrom?: number; status?: number; shortAt?: number} = {}) {
   const calls: URLSearchParams[] = [];
   const fakeFetch = (async (input: string | URL) => {
     const q = new URL(String(input)).searchParams;
@@ -56,7 +57,7 @@ function fakeYandex(orgs: FakeOrg[], opts: {cap?: number; failFrom?: number; sta
     const [[x1, y1], [x2, y2]] = q.get('bbox')!.split('~').map(c => c.split(',').map(Number));
     const hits = orgs.filter(o => o.tags.includes(q.get('text')!) && o.lon >= x1 && o.lon <= x2 && o.lat >= y1 && o.lat <= y2);
     const skip = Number(q.get('skip'));
-    const end = Math.min(skip + Number(q.get('results')), opts.cap ?? 1000);
+    const end = Math.min(skip + Number(q.get('results')) - (skip === opts.shortAt ? 1 : 0), opts.cap ?? 1000);
     return Response.json(collection(hits.length, hits.slice(skip, end).map(feature)));
   }) as typeof globalThis.fetch;
   return {fetch: fakeFetch, calls};
@@ -151,6 +152,26 @@ describe('searchArea', () => {
     expect(calls.every(q => q.get('rspn') === '1' && q.get('type') === 'biz' && q.get('lang') === 'ru_RU')).toBe(true);
     // 9 per quarter with 4 per page: skip 0, 4, 8.
     expect(calls.filter(q => q.get('bbox') === '0,0~0.5,0.5').map(q => q.get('skip'))).toEqual(['0', '4', '8']);
+  });
+
+  const pile = (n: number, tag: string, lon = 0.5, lat = 0.5): FakeOrg[] =>
+    Array.from({length: n}, (_, i) => ({id: `p${i}`, lon, lat, tags: [tag]}));
+
+  it('keeps paging past a short page until found is reached', async () => {
+    const {fetch, calls} = fakeYandex(pile(300, 'кафе'), {shortAt: 50});
+    const res = new NicheResults();
+    expect(await searchArea(api(fetch), 'кафе', box, orgs => res.add(orgs, 'кафе'))).toBe(true);
+    expect(calls.map(q => q.get('skip'))).toEqual(['0', '50', '100', '150', '200', '250']);
+    // Everything the API returned: all but the one the short page left out.
+    expect(res.rows).toHaveLength(299);
+  });
+
+  it('reports a cut list when pages run out before found', async () => {
+    const {fetch, calls} = fakeYandex(pile(800, 'кафе'), {cap: 500});
+    const res = new NicheResults();
+    expect(await searchArea(api(fetch), 'кафе', box, orgs => res.add(orgs, 'кафе'))).toBe(false);
+    expect(res.rows).toHaveLength(500);
+    expect(calls.map(q => q.get('skip')).at(-1)).toBe('500');
   });
 
   it('reports a cut list when the depth limit is reached', async () => {
@@ -343,12 +364,27 @@ describe('main', () => {
     expect(yandex.calls).toHaveLength(0);
   });
 
+  it('marks a niche truncated when pages run out early, with a custom page size', async () => {
+    const many = Array.from({length: 800}, (_, i) => ({id: `e${i}`, lon: 49.2, lat: 55.8, tags: ['электрик']}));
+    const yandex = fakeYandex(many, {cap: 500});
+    const res = await run(['--city', 'Казань', '--niche', '01-04', '--page-size', '100'], yandex.fetch);
+    expect(res.code).toBe(0);
+    expect(res.out).toContain('Внимание: в нишах 01-04');
+    const electric = yandex.calls.filter(q => q.get('text') === 'электрик');
+    expect(electric.map(q => q.get('skip'))).toEqual(['0', '100', '200', '300', '400', '500']);
+    expect(electric.every(q => q.get('results') === '100')).toBe(true);
+    expect(await readCsv(join(dir, 'out', '01-04 Электрики, сантехники, отопление и водоснабжение.csv'))).toHaveLength(501);
+  });
+
   it('rejects bad arguments', async () => {
     const {fetch} = fakeYandex(orgs);
     expect((await run(['--city', 'Казань'], fetch, {})).err).toContain('YANDEX_SEARCH_API_KEY');
     expect((await run([], fetch)).code).toBe(1);
     expect((await run(['--city', 'Казань', '--niche', 'нет такой'], fetch)).err).toContain('не найдена');
     expect((await run(['--city', 'Казань', '--delay', '-1'], fetch)).code).toBe(1);
+    for (const size of ['0', '501', 'abc', '1.5']) {
+      expect((await run(['--city', 'Казань', '--page-size', size], fetch)).err).toContain('--page-size');
+    }
     expect((await run(['--city', 'Казань', '--bogus'], fetch)).code).toBe(1);
   });
 });
