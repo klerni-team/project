@@ -5,6 +5,8 @@ import io
 import json
 import shutil
 import urllib.request
+import urllib.error
+import time
 import zipfile
 import tarfile
 from contextlib import nullcontext
@@ -38,9 +40,17 @@ def download(row):
         md5 = hashlib.md5(title.encode()).hexdigest()
         url = f"https://upload.wikimedia.org/wikipedia/commons/{md5[0]}/{md5[:2]}/{quote(title)}"
     try:
-        request = urllib.request.Request(url,headers={"User-Agent":"ConstructionInteriorDataset/1.0"})
-        with urllib.request.urlopen(request,timeout=45) as response:
-            data = response.read()
+        request = urllib.request.Request(url,headers={"User-Agent":"ConstructionInteriorDataset/1.0 (https://github.com/klerni-team/project)"})
+        for attempt in range(4):
+            try:
+                with urllib.request.urlopen(request,timeout=45) as response:
+                    data = response.read()
+                break
+            except urllib.error.HTTPError as exc:
+                if attempt == 3 or exc.code not in (429,500,502,503,504):
+                    raise
+                delay = exc.headers.get("Retry-After", "")
+                time.sleep(min(120, int(delay)) if delay.isdigit() else (30 if exc.code == 429 else 2 ** (attempt+1)))
         if row.get("source","COCO-Stuff") == "OpenSurfaces":
             if hashlib.md5(data).hexdigest() != row["source_md5"]:
                 raise ValueError("source MD5 mismatch")
@@ -69,7 +79,8 @@ print("Photo download finished. Review download-status.jsonl.")
 mask_source = root/"source-masks.zip"
 mask_url = "http://calvin.inf.ed.ac.uk/wp-content/uploads/data/cocostuffdataset/stuffthingmaps_trainval2017.zip"
 mask_error = None
-if not mask_source.exists():
+masks_complete = all((root/r["mask_path"]).exists() and hashlib.sha256((root/r["mask_path"]).read_bytes()).hexdigest() == r["mask_sha256"] for r in rows if r.get("mask_path"))
+if not mask_source.exists() and not masks_complete:
     sources = [
         mask_url,
         "https://huggingface.co/datasets/JPShi/COCO-Stuff/resolve/main/stuffthingmaps_trainval2017.zip",
@@ -95,6 +106,10 @@ with mask_context as masks, (root/"mask-status.jsonl").open("w",buffering=1) as 
         if not row.get("mask_path"):
             continue
         try:
+            existing = root/row["mask_path"]
+            if existing.exists() and hashlib.sha256(existing.read_bytes()).hexdigest() == row["mask_sha256"]:
+                report.write(json.dumps({"id":row["id"],"status":"verified"})+"\n")
+                continue
             if masks is None:
                 raise RuntimeError(mask_error or "mask source unavailable")
             split = row.get("source_split","val")
