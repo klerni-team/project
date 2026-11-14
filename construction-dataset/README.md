@@ -1,5 +1,9 @@
 # Construction interior dataset
 
+Published release: https://github.com/klerni-team/project/releases/tag/interiors-43632266881
+
+The release contains 5,143 verified JPEGs and all 2,330 verified masks. Three images from the 5,146-entry manifest remain unavailable after retries. Read download-status.jsonl for exact IDs and errors. The 50,000-image goal and comprehensive annotation remain unfinished.
+
 Current manifest: 5,146 images. Target of 50,000 has not been reached.
 
 Sources: 2,812 OpenSurfaces images, 99 visually reviewed COCO validation images, 2,231 automatically selected COCO training candidates, and 4 Wikimedia Commons images. Annotations are partial. Only two images explicitly mark visible fixed wiring; plaster coverage remains unverified.
@@ -12,7 +16,7 @@ The manifest records image sources, licenses, authors where known, SHA-256 hashe
 - `restore.py`: assembles the ZIP, restores original source photos and masks, verifies hashes, and packages verified bytes with status reports.
 - `DOWNLOADS.md`: links to the existing image archives saved in ChatGPT. Those links require the owner's account.
 
-Run `python -m pip install Pillow==13.0.0 numpy` and `python restore.py`. Failed downloads and byte mismatches remain visible in the reports. The user approved public release publication. Restoration is running at https://github.com/klerni-team/project/actions/runs/43630881603 . Releases contain the successfully verified photo and mask bytes plus per-file failure reports. Check restore-summary.json for the actual number restored; the manifest count is not a guarantee that all source URLs remain available. Individual rights-review limitations above continue to apply.
+Run `python -m pip install Pillow==13.0.0 numpy` and `python restore.py`. Failed downloads and byte mismatches remain visible in the reports. The user approved public release publication. Restoration and publication completed. The release includes per-file verification reports. Individual rights-review limitations above continue to apply.
 
 ## Attribution
 
