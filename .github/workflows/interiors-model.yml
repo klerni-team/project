@@ -1,0 +1,29 @@
+name: Publish verified interiors model baseline
+on:
+  push:
+    branches: [construction-dataset]
+    paths: ['.github/workflows/interiors-model.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned CPU dependencies
+        run: |
+          python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install transformers==4.57.1 pillow==13.0.0 scipy==1.16.3
+      - name: Download pinned weights, verify SHA256 and run offline CPU inference
+        run: python construction-dataset/model/baseline.py --download
+      - name: Publish weights and verification report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum mask2former-interiors-baseline.tar.gz > ARCHIVE_SHA256SUMS
+          gh release create "interiors-model-${GITHUB_RUN_ID}" --target "$GITHUB_SHA" --title "Mask2Former interiors baseline" --notes-file construction-dataset/model/README.md mask2former-interiors-baseline.tar.gz ARCHIVE_SHA256SUMS model-package/smoke-test.json model-package/PROVENANCE.json
