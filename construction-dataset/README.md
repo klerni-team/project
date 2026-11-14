@@ -12,7 +12,7 @@ The manifest records image sources, licenses, authors where known, SHA-256 hashe
 - `restore.py`: assembles the ZIP, restores original source photos and masks, verifies hashes, and packages verified bytes with status reports.
 - `DOWNLOADS.md`: links to the existing image archives saved in ChatGPT. Those links require the owner's account.
 
-Run `python -m pip install Pillow==13.0.0 numpy` and `python restore.py`. Failed downloads and byte mismatches remain visible in the reports. The repository currently contains the annotation archive, download index and restore script. Photo archives have not yet been uploaded to GitHub. No GitHub Actions release workflow is active. Automatic public release publication was blocked pending explicit approval because image-rights review is incomplete.
+Run `python -m pip install Pillow==13.0.0 numpy` and `python restore.py`. Failed downloads and byte mismatches remain visible in the reports. The user approved public release publication. Restoration is running at https://github.com/klerni-team/project/actions/runs/43630881603 . Releases contain the successfully verified photo and mask bytes plus per-file failure reports. Check restore-summary.json for the actual number restored; the manifest count is not a guarantee that all source URLs remain available. Individual rights-review limitations above continue to apply.
 
 ## Attribution
 
