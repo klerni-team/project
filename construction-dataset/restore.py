@@ -7,6 +7,7 @@ import shutil
 import urllib.request
 import zipfile
 import tarfile
+from contextlib import nullcontext
 
 import numpy as np
 from pathlib import Path
@@ -58,20 +59,44 @@ def download(row):
         return {"id":row["id"],"status":"failed","error":str(exc)}
 
 with (root/"download-status.jsonl").open("w",buffering=1) as report:
-    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
-        for result in pool.map(download,rows):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=24) as pool:
+        for index, result in enumerate(pool.map(download,rows), 1):
             report.write(json.dumps(result)+"\n")
+            if index % 200 == 0:
+                print(f"Processed {index}/{len(rows)} photos", flush=True)
 print("Photo download finished. Review download-status.jsonl.")
 
 mask_source = root/"source-masks.zip"
 mask_url = "http://calvin.inf.ed.ac.uk/wp-content/uploads/data/cocostuffdataset/stuffthingmaps_trainval2017.zip"
+mask_error = None
 if not mask_source.exists():
-    urllib.request.urlretrieve(mask_url, mask_source)
-with zipfile.ZipFile(mask_source) as masks, (root/"mask-status.jsonl").open("w",buffering=1) as report:
+    sources = [
+        mask_url,
+        "https://huggingface.co/datasets/JPShi/COCO-Stuff/resolve/main/stuffthingmaps_trainval2017.zip",
+    ]
+    for source_url in sources:
+        partial = mask_source.with_suffix(".partial")
+        try:
+            req = urllib.request.Request(source_url, headers={"User-Agent":"Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=90) as response, partial.open("wb") as dst:
+                shutil.copyfileobj(response, dst)
+            if not zipfile.is_zipfile(partial):
+                raise ValueError("mask download is not a ZIP")
+            partial.replace(mask_source)
+            mask_error = None
+            break
+        except Exception as exc:
+            partial.unlink(missing_ok=True)
+            mask_error = str(exc)
+            print(f"Mask source failed: {mask_error}", flush=True)
+mask_context = zipfile.ZipFile(mask_source) if mask_source.exists() else nullcontext(None)
+with mask_context as masks, (root/"mask-status.jsonl").open("w",buffering=1) as report:
     for row in rows:
         if not row.get("mask_path"):
             continue
         try:
+            if masks is None:
+                raise RuntimeError(mask_error or "mask source unavailable")
             split = row.get("source_split","val")
             key = row["id"][5:]
             with Image.open(io.BytesIO(masks.read(f"{split}2017/{key}.png"))) as im:
