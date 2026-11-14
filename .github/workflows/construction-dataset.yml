@@ -17,6 +17,16 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: python -m pip install Pillow==13.0.0 numpy
+      - name: Resume from verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download interiors-43631597974 --pattern interiors-restored.tar.gz --dir /tmp/interiors-previous
+          python - <<'PY'
+          import tarfile
+          with tarfile.open("/tmp/interiors-previous/interiors-restored.tar.gz") as archive:
+              archive.extractall("construction-dataset", filter="data")
+          PY
       - name: Restore and verify dataset
         run: python construction-dataset/restore.py
       - name: Preserve diagnostic reports
