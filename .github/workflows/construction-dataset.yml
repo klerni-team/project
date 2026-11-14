@@ -1,4 +1,4 @@
-name: Restore construction dataset
+name: Restore construction dataset and report failures
 on:
   push:
     branches: [construction-dataset]
@@ -19,6 +19,15 @@ jobs:
         run: python -m pip install Pillow==13.0.0 numpy
       - name: Restore and verify dataset
         run: python construction-dataset/restore.py
+      - name: Preserve diagnostic reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: restore-reports
+          path: |
+            construction-dataset/*status.jsonl
+            construction-dataset/restore-summary.json
+          if-no-files-found: warn
       - name: Publish archive and verification reports
         env:
           GH_TOKEN: ${{ github.token }}
