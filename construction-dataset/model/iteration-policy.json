@@ -10,8 +10,8 @@
     "guaranteed": false
   },
   "state": {
-    "phase": "cpu_head_training",
-    "last_training_release": "interiors-trained-43691723645",
+    "phase": "collecting_toward_50000",
+    "last_training_release": "interiors-trained-43726371232",
     "baseline_independent_test_miou": 0.27639755606651306,
     "gpu_finetuning_implemented": false,
     "last_collection_release": "materials-dms-43720376332",
@@ -19,19 +19,22 @@
     "last_collection_verified_train_pairs": 2558,
     "last_collection_excluded": 442,
     "last_checked_date": "2026-11-15",
-    "active_training_run": 43726371232,
     "active_training_mode": "20 CPU epochs, frozen backbone, resumed best DMS head, expanded training split",
-    "full_model_training_blocker": "No connected/verified GPU execution environment; local nvidia-smi command not found. Full GPU fine-tuning code remains unimplemented."
+    "full_model_training_blocker": "No connected/verified GPU execution environment; local nvidia-smi command not found. Full GPU fine-tuning code remains unimplemented.",
+    "active_collection_run": 43740576307,
+    "known_training_eligible": 7787,
+    "source_gap": "DMS alone cannot supply 50000 unique indoor training photos; additional sources and compatible verified annotations needed."
   },
   "collection": {
     "script": "construction-dataset/material-expansion/collect_next.py",
     "workflow": ".github/workflows/material-expansion.yml",
-    "max_new_candidates_per_cycle": 3000,
+    "max_new_candidates_per_cycle": 15000,
     "source_splits_allowed": [
       "train"
     ],
     "prior_manifests_and_audits_required": true,
-    "license": "CC-BY-NC-4.0 research only"
+    "license": "CC-BY-NC-4.0 research only",
+    "target_unique_training_photos": 50000
   },
   "training": {
     "require_verified_gpu_for_backbone_finetuning": true,
@@ -40,7 +43,8 @@
     "merge_only_training_eligible_records": true,
     "validation_locked_to": "interiors-trained-43691723645/split.json",
     "prior_test_already_inspected": true,
-    "new_final_test_required_before_final_target_claim": true
+    "new_final_test_required_before_final_target_claim": true,
+    "authorized_mode": "CPU nonlinear material head on frozen backbone, continue from best compatible weights"
   },
   "loop": {
     "max_active_jobs": 1,
@@ -49,7 +53,6 @@
     "max_cycles_per_review": 5,
     "stop_and_report": [
       "no usable new data",
-      "GPU unavailable",
       "same failure repeated twice",
       "three comparable cycles without validation gain",
       "manual label review needed",
