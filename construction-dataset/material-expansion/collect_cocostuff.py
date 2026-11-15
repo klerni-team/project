@@ -49,10 +49,13 @@ def validated_mask(row, archive):
 
 def fetch_photo(row):
     errors = []
-    for field in ("flickr_image_url", "image_url"):
-        url = row[field].replace("http:", "https:", 1)
+    filename = f"{row['coco_image_id']:012d}.jpg"
+    public_coco_bucket = f"https://s3.us-east-1.amazonaws.com/images.cocodataset.org/train2017/{filename}"
+    urls = {"coco_bucket": public_coco_bucket, "flickr_image_url": row["flickr_image_url"]}
+    for field, candidate_url in urls.items():
+        url = candidate_url.replace("http:", "https:", 1)
         host = urlsplit(url).hostname or ""
-        if not (host == "images.cocodataset.org" or host.endswith(".staticflickr.com")):
+        if not (host == "s3.us-east-1.amazonaws.com" or host.endswith(".staticflickr.com")):
             continue
         try:
             request = Request(url, headers={"User-Agent": "InteriorDatasetResearch/1.0"})
@@ -115,8 +118,16 @@ def main():
     parser.add_argument("masks", type=Path)
     parser.add_argument("--prior-manifest", type=Path, action="append", default=[])
     parser.add_argument("--pilot", type=int, default=0)
+    parser.add_argument("--recover-alignment", type=Path,
+                        help="Prior audit; retry only candidates that failed image alignment.")
     args = parser.parse_args()
     candidates = [json.loads(line) for line in args.candidates.read_text().splitlines()]
+    if args.recover_alignment:
+        prior_audit = json.loads(args.recover_alignment.read_text())
+        ids = {row["id"] for row in prior_audit if row["status"] == "photo_alignment_excluded"}
+        candidates = [row for row in candidates if row["id"] in ids]
+        if not candidates:
+            raise ValueError("No audited alignment failures were found in the candidate inventory")
     with ZipFile(args.masks) as archive:
         worker = partial(collect, archive=archive)
         if args.pilot:
