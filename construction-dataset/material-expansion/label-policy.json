@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "goal": {
+    "metric": "per-class IoU on independent interior objects",
+    "target": 0.9,
+    "status": "aspirational, not measured or guaranteed",
+    "test_exclusions": [
+      "No test images used for gradient updates or model selection",
+      "No shared original photos or near duplicates across splits",
+      "Building identity needs manual verification"
+    ]
+  },
+  "dataset_role": "research-only supplemental dense material supervision",
+  "annotation_license": "CC-BY-NC-4.0",
+  "label_mapping": {
+    "Brickwork": "brick",
+    "Carpet/rug": "carpet_or_rug",
+    "Ceiling tile": "ceiling_tile_unspecified_composition",
+    "Ceramic": "ceramic",
+    "Concrete": "concrete",
+    "Cork/corkboard": "cork",
+    "Engineered stone": "engineered_stone",
+    "Fabric/cloth": "fabric",
+    "Fiberglass wool": "fiberglass_wool",
+    "Glass": "glass",
+    "Metal": "metal",
+    "Mirror": "mirror",
+    "Paint/plaster/enamel": "paint_or_plaster_or_enamel",
+    "Plastic, clear": "clear_plastic",
+    "Plastic, non-clear": "opaque_plastic",
+    "Rubber/latex": "rubber_or_latex",
+    "Stone, natural": "natural_stone_unspecified",
+    "Stone, polished": "polished_stone_unspecified",
+    "Tile": "tile_unspecified",
+    "Wallpaper": "wallpaper",
+    "Wood": "wood"
+  },
+  "forbidden_inferences": [
+    "paint/plaster/enamel -> plaster only",
+    "polished stone -> marble only",
+    "wood -> laminate",
+    "tile -> ceramic tile only",
+    "panel -> a single physical material",
+    "visible coating -> hidden substrate"
+  ],
+  "remaining_gaps": [
+    "confirmed linoleum vs vinyl/PVC",
+    "laminate vs real wood flooring",
+    "gypsum plaster vs cement plaster vs painted surface",
+    "gypsum board",
+    "marble vs granite vs engineered stone",
+    "wall panels by actual material"
+  ],
+  "acceptance": {
+    "human_review_required": true,
+    "independent_interior_test_required": true,
+    "unknown_class_required": true,
+    "rare_classes_without_test_examples": "report unmeasured; never count as 90%"
+  }
+}
