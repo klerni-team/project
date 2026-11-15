@@ -1,5 +1,5 @@
 """Research-only DMS material branch: transferred linear weights + nonlinear residual."""
-import json,hashlib,random,tarfile,shutil
+import argparse,json,hashlib,random,tarfile,shutil
 from pathlib import Path
 import numpy as np
 import torch
@@ -67,12 +67,28 @@ def plot(history):
  fig.tight_layout();fig.savefig(OUT/'learning-curves.png',dpi=160);plt.close(fig)
 
 def main():
+ parser=argparse.ArgumentParser(description=__doc__)
+ parser.add_argument('--resume-dms',action='store_true',help='Start from the previous DMS material checkpoint on an expanded train split.')
+ args=parser.parse_args()
+ parent_release='interiors-trained-43691723645' if args.resume_dms else 'interiors-trained-43635573640'
+ data_releases=['materials-dms-43685792992']
+ if args.resume_dms:data_releases.append('materials-dms-43720376332')
  torch.set_num_threads(2);torch.manual_seed(42);random.seed(42);rng=np.random.default_rng(42)
  OUT.mkdir(exist_ok=True);CACHE.mkdir(exist_ok=True)
  old_config=json.loads(Path('previous/adapter_config.json').read_text());assert sha('model-package/model.safetensors')==old_config['base_weight_sha256']
  rows=[json.loads(l) for l in (DATA/'manifest.jsonl').read_text().splitlines()]
  groups={s:[r for r in rows if r['split']==s and r['training_eligible' if s=='train' else 'evaluation_eligible']] for s in ['train','validation','test']}
- assert len(groups['train'])==5229;assert sum(len(groups[s]) for s in ['validation','test'])==2077
+ expected_train=7787 if args.resume_dms else 5229
+ assert len(groups['train'])==expected_train
+ assert len(groups['validation'])==1024 and len(groups['test'])==1053
+ selected=[r for group in groups.values() for r in group]
+ for key in ('id','image_path','mask_path','image_sha256','source_image_id'):
+  assert len({r[key] for r in selected})==len(selected),f'duplicate selected {key}'
+ if args.resume_dms:
+  locked=json.loads(Path('resume/split.json').read_text())
+  for split in ('validation','test'):
+   assert [r['id'] for r in groups[split]]==locked[split],f'{split} changed'
+  assert {r['id'] for r in groups['train']}.issuperset(locked['train'])
  sets=[{r['source_image_id'] for r in groups[s]} for s in groups];assert not (sets[0]&sets[1] or sets[0]&sets[2] or sets[1]&sets[2])
  (OUT/'split.json').write_text(json.dumps({s:[r['id'] for r in rs] for s,rs in groups.items()},indent=2))
  print('SPLITS',json.dumps({s:len(rs) for s,rs in groups.items()}),flush=True)
@@ -95,11 +111,18 @@ def main():
    path=CACHE/f"{row['id']}.npz";np.savez(path,x=f[valid].astype('float16'),y=t[valid].astype('uint8'));paths[split].append(path);id_for_path[str(path)]=row['id']
    if (i+1)%200==0:print(f'FEATURES {split}: {i+1}/{len(groups[split])}',flush=True)
  del base
- head=MaterialHead();old=load_file('previous/heads.safetensors');copied=[]
- with torch.no_grad():
-  for dest,source in COPY.items():
-   if source in old_config['material_labels']:
-    j=LABELS.index(dest);k=old_config['material_labels'].index(source);head.linear.weight[j].copy_(old['material.weight'][k,:,0,0]);head.linear.bias[j].copy_(old['material.bias'][k]);copied.append({'new_label':dest,'initialized_from':source})
+ head=MaterialHead();copied=[]
+ if args.resume_dms:
+  resume_config=json.loads(Path('resume/adapter_config.json').read_text())
+  assert resume_config['base_weight_sha256']==old_config['base_weight_sha256']
+  assert resume_config['material_labels']==LABELS and resume_config['dms_ids']==IDS
+  head.load_state_dict(load_file('resume/material-head.safetensors'))
+ else:
+  old=load_file('previous/heads.safetensors')
+  with torch.no_grad():
+   for dest,source in COPY.items():
+    if source in old_config['material_labels']:
+     j=LABELS.index(dest);k=old_config['material_labels'].index(source);head.linear.weight[j].copy_(old['material.weight'][k,:,0,0]);head.linear.bias[j].copy_(old['material.bias'][k]);copied.append({'new_label':dest,'initialized_from':source})
  weights=np.zeros(len(LABELS),np.float32);present=hist>0;weights[present]=np.sqrt(np.median(hist[present])/hist[present]);weights[present]=np.clip(weights[present],.25,4);weight=torch.from_numpy(weights)
  initial=evaluate(head,cached(paths['validation']));best=initial['loss'];best_epoch=0;save_file(head.state_dict(),str(OUT/'material-head.safetensors'))
  history=[];optimizer=torch.optim.AdamW(head.parameters(),lr=.0002,weight_decay=.01);visited=set();steps=0;epochs=20
@@ -114,7 +137,7 @@ def main():
   save_file(head.state_dict(),str(OUT/'last-material-head.safetensors'));torch.save({'optimizer':optimizer.state_dict(),'epoch':epoch},OUT/'optimizer-state.pt')
   (OUT/'history.json').write_text(json.dumps(history,indent=2));plot(history);print('EPOCH',json.dumps(record),flush=True)
  assert len(visited)==len(paths['train']);head.load_state_dict(load_file(str(OUT/'material-head.safetensors')));head.eval();final=evaluate(head,cached(paths['validation']))
- # Independent test is encoded and evaluated only once after checkpoint selection.
+ # Evaluate the fixed test split after checkpoint selection.
  base=Mask2FormerForUniversalSegmentation.from_pretrained('model-package',local_files_only=True,use_safetensors=True).eval()
  def test_items():
   for i,row in enumerate(groups['test']):
@@ -127,9 +150,14 @@ def main():
  clone=MaterialHead().eval();clone.load_state_dict(load_file(str(OUT/'material-head.safetensors')))
  probe=torch.zeros((8,256));assert torch.allclose(head(probe),clone(probe))
  shutil.copy('previous/heads.safetensors',OUT/'previous-heads.safetensors');shutil.copy('previous/adapter_config.json',OUT/'previous-adapter-config.json')
- config={'architecture':'linear + LayerNorm/Linear256x128/GELU/Dropout0.1/Linear128x22 residual; frozen Mask2Former pixel features','base_revision':old_config['base_revision'],'base_weight_sha256':old_config['base_weight_sha256'],'material_labels':LABELS,'dms_ids':IDS,'ignored_dms_ids':sorted(IGNORE),'other_index':len(LABELS)-1,'input_size':[256,256],'evaluation_grid':[64,64],'initialization':copied,'use_restriction':'research only; DMS annotations CC-BY-NC-4.0'}
+ config={'architecture':'linear + LayerNorm/Linear256x128/GELU/Dropout0.1/Linear128x22 residual; frozen Mask2Former pixel features','base_revision':old_config['base_revision'],'base_weight_sha256':old_config['base_weight_sha256'],'material_labels':LABELS,'dms_ids':IDS,'ignored_dms_ids':sorted(IGNORE),'other_index':len(LABELS)-1,'input_size':[256,256],'evaluation_grid':[64,64],'initialization':copied,'parent_release':parent_release,'use_restriction':'research only; DMS annotations CC-BY-NC-4.0'}
  (OUT/'adapter_config.json').write_text(json.dumps(config,indent=2));(OUT/'coverage.json').write_text(json.dumps({'excluded':excluded,'train_ids_seen':sorted(visited),'source_counts':{s:len(rs) for s,rs in groups.items()}},indent=2))
- report={'status':'completed','stage':'DMS nonlinear material head transfer learning; backbone frozen; previous surface branch retained unchanged','parent_release':'interiors-trained-43635573640','data_release':'materials-dms-43685792992','train_images':len(paths['train']),'validation_images':len(paths['validation']),'test_images':len(groups['test'])-sum(r['split']=='test' for r in excluded),'epochs':epochs,'best_epoch':best_epoch,'optimizer_steps':steps,'unique_training_images_seen':len(visited),'trainable_parameters':sum(p.numel() for p in head.parameters()),'initial_validation':initial,'best_validation':final,'independent_test':test,'per_class_90_percent_reached':all(v['iou'] is not None and v['iou']>=.9 for k,v in test['material']['classes'].items() if k!='other_labeled_content'),'limitations':['No 90% guarantee; compare against initial result on this same label set, not prior pilot.','21 target material labels plus other content; no separate linoleum or plaster classifier.','IoU on annotated 64x64 pixels; not full-resolution all-photo accuracy.','Backbone frozen; not full-network fine-tuning.','Class-weighted train loss and unweighted validation loss are not directly comparable.','Source-predicted interior scenes; no building-level split guarantee.','Research-only annotations; base checkpoint license other; photo rights from source metadata.','Some classes initialized from narrower/broader old classes only as a starting point, not relabeled ground truth.']}
+ report={'status':'completed','stage':'DMS nonlinear material head transfer learning; backbone frozen; previous surface branch retained unchanged','parent_release':parent_release,'data_release':data_releases[0],'data_releases':data_releases,'train_images':len(paths['train']),'validation_images':len(paths['validation']),'test_images':len(groups['test'])-sum(r['split']=='test' for r in excluded),'epochs':epochs,'best_epoch':best_epoch,'optimizer_steps':steps,'unique_training_images_seen':len(visited),'trainable_parameters':sum(p.numel() for p in head.parameters()),'initial_validation':initial,'best_validation':final,'independent_test':test,'per_class_90_percent_reached':all(v['iou'] is not None and v['iou']>=.9 for k,v in test['material']['classes'].items() if k!='other_labeled_content'),'limitations':['No 90% guarantee; compare against initial result on this same label set, not prior pilot.','21 target material labels plus other content; no separate linoleum or plaster classifier.','IoU on annotated 64x64 pixels; not full-resolution all-photo accuracy.','Backbone frozen; not full-network fine-tuning.','Class-weighted train loss and unweighted validation loss are not directly comparable.','Source-predicted interior scenes; no building-level split guarantee.','Research-only annotations; base checkpoint license other; photo rights from source metadata.','Some classes initialized from narrower/broader old classes only as a starting point, not relabeled ground truth.']}
+ if args.resume_dms:
+  report['test_note']='Previously reported DMS test split; fixed benchmark for comparison, not a fresh final test.'
+  report['limitations'].append(report['test_note'])
+  report['per_class_90_percent_on_reused_benchmark']=report.pop('per_class_90_percent_reached')
+  report['final_target_confirmed']=False
  (OUT/'training-report.json').write_text(json.dumps(report,indent=2));(OUT/'SHA256SUMS').write_text(''.join(f'{sha(p)}  {p.name}\n' for p in sorted(OUT.iterdir()) if p.is_file() and p.name!='SHA256SUMS'))
  with tarfile.open('interiors-dms-heads.tar.gz','w:gz') as t:t.add(OUT,arcname=OUT.name)
  print('FINAL',json.dumps(report),flush=True)
