@@ -10,11 +10,16 @@
     "guaranteed": false
   },
   "state": {
-    "phase": "collecting_next_batch",
+    "phase": "blocked_gpu",
     "last_training_release": "interiors-trained-43691723645",
     "baseline_independent_test_miou": 0.27639755606651306,
-    "training_blocker": "GPU execution environment not connected/verified; local nvidia-smi unavailable",
-    "gpu_finetuning_implemented": false
+    "training_blocker": "No connected/verified GPU execution environment; local nvidia-smi command not found. Full GPU fine-tuning code remains unimplemented.",
+    "gpu_finetuning_implemented": false,
+    "last_collection_release": "materials-dms-43720376332",
+    "last_collection_run": 43720376332,
+    "last_collection_verified_train_pairs": 2558,
+    "last_collection_excluded": 442,
+    "last_checked_date": "2026-11-15"
   },
   "collection": {
     "script": "construction-dataset/material-expansion/collect_next.py",
