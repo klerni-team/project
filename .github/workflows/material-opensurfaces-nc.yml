@@ -1,0 +1,50 @@
+name: Collect OpenSurfaces noncommercial interior photos
+on:
+  push:
+    branches: [construction-dataset]
+    paths: ['.github/workflows/material-opensurfaces-nc.yml']
+  workflow_dispatch:
+concurrency:
+  group: material-expansion
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DATA_RELEASE: materials-opensurfaces-nc-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install collection dependencies
+        run: python -m pip install pillow==13.0.0 numpy scipy==1.16.3
+      - name: Download verified source metadata and prior manifests
+        run: |
+          curl --fail --location --retry 3 --output opensurfaces.zip https://labelmaterial.s3.amazonaws.com/release/opensurfaces-release-0.zip
+          echo 'ef03b1c89c919f2c83930c1d397b6b8131c6a6c76b45d40850387c0c6e58d318  opensurfaces.zip' | sha256sum -c
+          for tag in materials-dms-43685792992 materials-dms-43720376332 materials-dms-43740576307 materials-opensurfaces-43746023532 materials-multilum-43750528541 materials-opensurfaces-sa-43754949491; do
+            gh release download "$tag" --pattern manifest.jsonl --dir "prior/$tag"
+          done
+      - name: Collect and verify training photos
+        run: |
+          gh release create "$DATA_RELEASE" --draft --target "$GITHUB_SHA" --title 'OpenSurfaces photos and masks for noncommercial research' --notes 'Original photos retain CC BY-NC or CC BY-NC-SA as recorded in each archive. Noncommercial research only. Separate OpenSurfaces annotations are CC BY 4.0.'
+          args=()
+          for manifest in prior/*/manifest.jsonl; do
+            args+=(--prior-manifest "$manifest")
+          done
+          python -u construction-dataset/material-expansion/collect_opensurfaces.py opensurfaces.zip --noncommercial --publish "${args[@]}"
+          gh release upload "$DATA_RELEASE" opensurfaces-nc-output/*
+          gh release edit "$DATA_RELEASE" --draft=false
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: opensurfaces-report
+          path: |
+            opensurfaces-nc-output/*.json
+            opensurfaces-nc-output/manifest.jsonl
+          if-no-files-found: warn
