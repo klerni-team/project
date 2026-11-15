@@ -1,0 +1,47 @@
+name: Audit COCO-Stuff interior material candidates
+on:
+  push:
+    branches: [construction-dataset]
+    paths: ['.github/workflows/material-cocostuff-audit.yml']
+  workflow_dispatch:
+concurrency:
+  group: material-expansion
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install audit dependencies
+        run: pip install numpy pillow==13.0.0
+      - name: Verify annotation archives and retrieve prior manifests
+        run: |
+          curl -fsSL --retry 3 -o masks.zip 'https://huggingface.co/datasets/JPShi/COCO-Stuff/resolve/main/stuffthingmaps_trainval2017.zip'
+          curl -fsSL --retry 3 -o metadata.json 'https://huggingface.co/datasets/merve/coco/resolve/main/annotations/instances_train2017.json'
+          echo 'da7f213d6a581bd6912a957573d7b4e5061de0d41f733bb27249b0fa981239d7  masks.zip' | sha256sum -c
+          echo '610fce4944abdeb15354cc765333805529359d12d88f2f711393ca586901d01d  metadata.json' | sha256sum -c
+          for tag in materials-dms-43685792992 materials-dms-43720376332 materials-dms-43740576307 materials-opensurfaces-43746023532 materials-multilum-43750528541 materials-opensurfaces-sa-43754949491 materials-opensurfaces-nc-43761049909; do
+            gh release download "$tag" --pattern manifest.jsonl --dir "prior/$tag"
+          done
+      - name: Inventory real material annotations and audit photo rights
+        run: |
+          args=()
+          for manifest in prior/*/manifest.jsonl; do
+            args+=(--prior-manifest "$manifest")
+          done
+          python -u construction-dataset/material-expansion/inventory_cocostuff.py masks.zip metadata.json "${args[@]}"
+          python -u construction-dataset/material-expansion/audit_cocostuff_credits.py cocostuff-inventory/candidates.jsonl --size 128
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cocostuff-candidate-audit
+          path: cocostuff-inventory/
+          if-no-files-found: warn
