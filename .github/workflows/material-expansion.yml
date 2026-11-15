@@ -1,9 +1,12 @@
-name: Collect verified interior material pairs
+name: Collect next unseen training material batch
 on:
   push:
     branches: [construction-dataset]
     paths: ['.github/workflows/material-expansion.yml']
   workflow_dispatch:
+concurrency:
+  group: material-expansion
+  cancel-in-progress: false
 permissions:
   contents: write
 jobs:
@@ -28,13 +31,26 @@ jobs:
           with tarfile.open("/tmp/prior/interiors-restored.tar.gz") as t: t.extractall("old-data",filter="data")
           PY
           rm /tmp/prior/interiors-restored.tar.gz
+      - name: Download all prior collection manifests and audits
+        run: |
+          gh release list --limit 1000 --json tagName,isDraft > /tmp/material-releases.json
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          releases=json.loads(Path("/tmp/material-releases.json").read_text())
+          for r in releases:
+              tag=r["tagName"]
+              if tag.startswith("materials-dms-") and not r["isDraft"]:
+                  subprocess.run(["gh","release","download",tag,"--pattern","manifest.jsonl","--pattern","collection-audit.json","--dir",str(Path("previous-data")/tag)],check=True)
+          assert list(Path("previous-data").rglob("manifest.jsonl")), "Previous corpus unavailable"
+          PY
       - name: Create staging release
         run: gh release create "$DATA_RELEASE" --draft --target "$GITHUB_SHA" --title "Additional indoor material pairs — research only" --notes-file construction-dataset/material-expansion/README.md
       - name: Collect and verify photos and material masks
-        run: python -u construction-dataset/material-expansion/collect.py
+        run: python -u construction-dataset/material-expansion/collect_next.py
       - name: Publish complete collection and audit
         run: |
-          gh release upload "$DATA_RELEASE" material-expansion/manifest.jsonl material-expansion/taxonomy.json material-expansion/collection-report.json material-expansion/collection-audit.json material-expansion/ATTRIBUTION.md material-expansion/SHA256SUMS
+          gh release upload "$DATA_RELEASE" material-expansion/manifest.jsonl material-expansion/taxonomy.json material-expansion/collection-report.json material-expansion/collection-audit.json material-expansion/ATTRIBUTION.md material-expansion/SHA256SUMS material-expansion/candidate-pool.json
           gh release edit "$DATA_RELEASE" --draft=false
       - uses: actions/upload-artifact@v4
         if: always()
