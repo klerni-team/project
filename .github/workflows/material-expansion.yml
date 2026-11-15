@@ -15,6 +15,7 @@ jobs:
     timeout-minutes: 120
     env:
       GH_TOKEN: ${{ github.token }}
+      MAX_NEW_CANDIDATES: '15000'
       DATA_RELEASE: materials-dms-${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
