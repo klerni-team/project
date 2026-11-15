@@ -1,0 +1,53 @@
+name: Collect verified COCO-Stuff interior material photos
+on:
+  push:
+    branches: [construction-dataset]
+    paths: ['.github/workflows/material-cocostuff.yml']
+  workflow_dispatch:
+concurrency:
+  group: material-expansion
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DATA_RELEASE: materials-cocostuff-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install audit dependencies
+        run: pip install numpy scipy==1.16.3 pillow==13.0.0
+      - name: Verify annotation archives and retrieve prior manifests
+        run: |
+          curl -fsSL --retry 3 -o masks.zip 'https://huggingface.co/datasets/JPShi/COCO-Stuff/resolve/main/stuffthingmaps_trainval2017.zip'
+          curl -fsSL --retry 3 -o metadata.json 'https://huggingface.co/datasets/merve/coco/resolve/main/annotations/instances_train2017.json'
+          echo 'da7f213d6a581bd6912a957573d7b4e5061de0d41f733bb27249b0fa981239d7  masks.zip' | sha256sum -c
+          echo '610fce4944abdeb15354cc765333805529359d12d88f2f711393ca586901d01d  metadata.json' | sha256sum -c
+          for tag in materials-dms-43685792992 materials-dms-43720376332 materials-dms-43740576307 materials-opensurfaces-43746023532 materials-multilum-43750528541 materials-opensurfaces-sa-43754949491 materials-opensurfaces-nc-43761049909; do
+            gh release download "$tag" --pattern manifest.jsonl --dir "prior/$tag"
+          done
+      - name: Collect aligned masks and photos with verified original credits
+        run: |
+          args=()
+          for manifest in prior/*/manifest.jsonl; do
+            args+=(--prior-manifest "$manifest")
+          done
+          python -u construction-dataset/material-expansion/inventory_cocostuff.py masks.zip metadata.json "${args[@]}"
+          gh release create "$DATA_RELEASE" --draft --target "$GITHUB_SHA" --title 'COCO-Stuff material photos with original credits' --notes 'COCO-Stuff source annotations CC BY 4.0. Original JPEGs retain their individual Flickr licenses. Research use only for noncommercial photos.'
+          python -u construction-dataset/material-expansion/collect_cocostuff.py cocostuff-inventory/candidates.jsonl masks.zip "${args[@]}"
+          gh release upload "$DATA_RELEASE" cocostuff-output/*
+          gh release edit "$DATA_RELEASE" --draft=false
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cocostuff-collection-audit
+          path: |
+            cocostuff-inventory/report.json
+            cocostuff-output/*.json
+          if-no-files-found: warn
