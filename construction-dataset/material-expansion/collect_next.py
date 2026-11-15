@@ -63,10 +63,12 @@ def main():
  remaining=[r for r in candidates if r['split']=='train' and r['id'] not in attempted]
  random.Random(42).shuffle(remaining);selection={}
  buckets=[[r for r in remaining if r['label_fraction'][target]>=.02] for target in TARGETS]
- # At most 3000 new candidates per cycle, round-robin across material classes.
- while len(selection)<3000 and any(buckets):
+ limit=int(os.environ.get('MAX_NEW_CANDIDATES','3000'))
+ assert 0<limit<=15000
+ # Select unseen candidates round-robin across material classes.
+ while len(selection)<limit and any(buckets):
   for bucket in buckets:
-   if bucket and len(selection)<3000:
+   if bucket and len(selection)<limit:
     r=bucket.pop();selection[r['id']]=r
  (ROOT/'candidate-pool.json').write_text(json.dumps({'prior_attempted':len(attempted),'remaining_before':len(remaining),'selected':len(selection),'remaining_after_this_attempt':len(remaining)-len(selection)},indent=2))
  if not selection:
@@ -136,6 +138,7 @@ def main():
    else:
     r['training_eligible']=split=='train';r['evaluation_eligible']=split in ['test','validation'];r['eligibility_reason']='passed automated checks; research-only; source scene/labels not manually reviewed'
    seen.add(r['image_sha256']);ids.add(r['source_image_id'])
+   if split=='train' and r['training_eligible']:protected.add(int(r['phash63']),r['id'])
   if split!='train':
    for r in [r for r in rows if r['split']==split]:protected.add(int(r['phash63']),r['id'])
  with (ROOT/'manifest.jsonl').open('w') as f:
