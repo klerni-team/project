@@ -10,7 +10,7 @@
     "guaranteed": false
   },
   "state": {
-    "phase": "auditing_cocostuff_candidates",
+    "phase": "collecting_cocostuff",
     "last_training_release": "interiors-trained-43726371232",
     "baseline_independent_test_miou": 0.27639755606651306,
     "gpu_finetuning_implemented": false,
@@ -21,12 +21,22 @@
     "last_checked_date": "2026-11-15",
     "active_training_mode": "20 CPU epochs, frozen backbone, resumed best DMS head, expanded training split",
     "full_model_training_blocker": "No connected/verified GPU execution environment; local nvidia-smi command not found. Full GPU fine-tuning code remains unimplemented.",
-    "active_collection_run": 43768704318,
+    "active_collection_run": 43770328104,
     "known_training_eligible": 36319,
     "source_gap": "DMS alone cannot supply 50000 unique indoor training photos; additional sources and compatible verified annotations needed.",
     "remaining_dms_candidates": 0,
     "remaining_to_training_target": 13681,
-    "cocostuff_candidates_not_yet_eligible": 9599
+    "cocostuff_candidates_not_yet_eligible": 9599,
+    "cocostuff_rights_pilot": {
+      "audited": 128,
+      "verified": 89,
+      "original_page_unverified": 35,
+      "license_mismatch": 4
+    },
+    "cocostuff_pair_pilot": {
+      "audited": 32,
+      "verified_pairs": 6
+    }
   },
   "collection": {
     "script": "construction-dataset/material-expansion/collect_next.py",
