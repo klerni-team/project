@@ -1,0 +1,42 @@
+name: Collect Multi-Illumination material photos
+on:
+  push:
+    branches: [construction-dataset]
+    paths: ['.github/workflows/material-multilum.yml']
+  workflow_dispatch:
+concurrency:
+  group: material-expansion
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DATA_RELEASE: materials-multilum-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install numpy scipy==1.16.3 pillow==13.0.0
+      - name: Download scene list and prior manifests
+        run: |
+          curl -fsSL --retry 3 -o scenes.json https://raw.githubusercontent.com/lmurmann/multi_illumination/master/scenes.json
+          echo '567e399ed61433c88d3aff161e529e08bde29f6ae16732ee5ebb6d420aca229e  scenes.json' | sha256sum -c
+          for tag in materials-dms-43685792992 materials-dms-43720376332 materials-dms-43740576307 materials-opensurfaces-43746023532; do
+            gh release download "$tag" --pattern manifest.jsonl --dir "prior/$tag"
+          done
+      - name: Collect source photos and pixel masks
+        run: |
+          gh release create "$DATA_RELEASE" --draft --target "$GITHUB_SHA" --title 'Multi-Illumination photos and material masks' --notes 'CC BY source. One original photograph per scene. Original attribution and per-image metadata included.'
+          args=()
+          for manifest in prior/*/manifest.jsonl; do
+            args+=(--prior-manifest "$manifest")
+          done
+          python -u construction-dataset/material-expansion/collect_multilum.py scenes.json "${args[@]}"
+          gh release upload "$DATA_RELEASE" multilum-output/*
+          gh release edit "$DATA_RELEASE" --draft=false
