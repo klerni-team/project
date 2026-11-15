@@ -1,0 +1,50 @@
+name: Collect OpenSurfaces CC BY-SA interior photos
+on:
+  push:
+    branches: [construction-dataset]
+    paths: ['.github/workflows/material-opensurfaces-sa.yml']
+  workflow_dispatch:
+concurrency:
+  group: material-expansion
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DATA_RELEASE: materials-opensurfaces-sa-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install collection dependencies
+        run: python -m pip install pillow==13.0.0 numpy scipy==1.16.3
+      - name: Download verified source metadata and prior manifests
+        run: |
+          curl --fail --location --retry 3 --output opensurfaces.zip https://labelmaterial.s3.amazonaws.com/release/opensurfaces-release-0.zip
+          echo 'ef03b1c89c919f2c83930c1d397b6b8131c6a6c76b45d40850387c0c6e58d318  opensurfaces.zip' | sha256sum -c
+          for tag in materials-dms-43685792992 materials-dms-43720376332 materials-dms-43740576307 materials-opensurfaces-43746023532 materials-multilum-43750528541; do
+            gh release download "$tag" --pattern manifest.jsonl --dir "prior/$tag"
+          done
+      - name: Collect and verify training photos
+        run: |
+          gh release create "$DATA_RELEASE" --draft --target "$GITHUB_SHA" --title 'OpenSurfaces CC BY-SA photos and material masks' --notes 'Original JPEGs retain individual CC BY-SA 2.0 or 3.0 licenses. Each archive includes credits and license links. Separate OpenSurfaces annotations are CC BY 4.0.'
+          args=()
+          for manifest in prior/*/manifest.jsonl; do
+            args+=(--prior-manifest "$manifest")
+          done
+          python -u construction-dataset/material-expansion/collect_opensurfaces.py opensurfaces.zip --by-sa --publish "${args[@]}"
+          gh release upload "$DATA_RELEASE" opensurfaces-sa-output/*
+          gh release edit "$DATA_RELEASE" --draft=false
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: opensurfaces-report
+          path: |
+            opensurfaces-sa-output/*.json
+            opensurfaces-sa-output/manifest.jsonl
+          if-no-files-found: warn
