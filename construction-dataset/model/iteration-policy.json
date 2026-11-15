@@ -10,20 +10,22 @@
     "guaranteed": false
   },
   "state": {
-    "phase": "collecting_toward_50000",
+    "phase": "collecting_opensurfaces",
     "last_training_release": "interiors-trained-43726371232",
     "baseline_independent_test_miou": 0.27639755606651306,
     "gpu_finetuning_implemented": false,
-    "last_collection_release": "materials-dms-43720376332",
-    "last_collection_run": 43720376332,
-    "last_collection_verified_train_pairs": 2558,
-    "last_collection_excluded": 442,
+    "last_collection_release": "materials-dms-43740576307",
+    "last_collection_run": 43740576307,
+    "last_collection_verified_train_pairs": 9791,
+    "last_collection_excluded": 1592,
     "last_checked_date": "2026-11-15",
     "active_training_mode": "20 CPU epochs, frozen backbone, resumed best DMS head, expanded training split",
     "full_model_training_blocker": "No connected/verified GPU execution environment; local nvidia-smi command not found. Full GPU fine-tuning code remains unimplemented.",
-    "active_collection_run": 43740576307,
-    "known_training_eligible": 7787,
-    "source_gap": "DMS alone cannot supply 50000 unique indoor training photos; additional sources and compatible verified annotations needed."
+    "active_collection_run": 43746023532,
+    "known_training_eligible": 17578,
+    "source_gap": "DMS alone cannot supply 50000 unique indoor training photos; additional sources and compatible verified annotations needed.",
+    "remaining_dms_candidates": 0,
+    "remaining_to_training_target": 32422
   },
   "collection": {
     "script": "construction-dataset/material-expansion/collect_next.py",
