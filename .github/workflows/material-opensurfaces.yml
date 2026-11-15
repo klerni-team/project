@@ -1,0 +1,49 @@
+name: Collect OpenSurfaces interior material photos
+on:
+  push:
+    branches: [construction-dataset]
+    paths: ['.github/workflows/material-opensurfaces.yml']
+  workflow_dispatch:
+concurrency:
+  group: material-expansion
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DATA_RELEASE: materials-opensurfaces-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install collection dependencies
+        run: python -m pip install pillow==13.0.0 numpy scipy==1.16.3
+      - name: Download verified source metadata and prior manifests
+        run: |
+          curl --fail --location --retry 3 --output opensurfaces.zip https://labelmaterial.s3.amazonaws.com/release/opensurfaces-release-0.zip
+          echo 'ef03b1c89c919f2c83930c1d397b6b8131c6a6c76b45d40850387c0c6e58d318  opensurfaces.zip' | sha256sum -c
+          for run in 43685792992 43720376332 43740576307; do
+            gh release download "materials-dms-$run" --pattern manifest.jsonl --dir "prior/$run"
+          done
+      - name: Collect and verify training photos
+        run: |
+          gh release create "$DATA_RELEASE" --draft --target "$GITHUB_SHA" --title 'OpenSurfaces interior photos and material masks' --notes 'OpenSurfaces annotations CC BY 4.0; image license and author are listed per image. Masks are sparse, with unlabeled pixels ignored.'
+          python -u construction-dataset/material-expansion/collect_opensurfaces.py opensurfaces.zip --publish \
+            --prior-manifest prior/43685792992/manifest.jsonl \
+            --prior-manifest prior/43720376332/manifest.jsonl \
+            --prior-manifest prior/43740576307/manifest.jsonl
+          gh release upload "$DATA_RELEASE" opensurfaces-output/*
+          gh release edit "$DATA_RELEASE" --draft=false
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: opensurfaces-report
+          path: |
+            opensurfaces-output/*.json
+            opensurfaces-output/manifest.jsonl
+          if-no-files-found: warn
