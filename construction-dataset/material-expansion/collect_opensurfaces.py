@@ -144,7 +144,13 @@ def sample(candidate, include_files=False):
         return {"id": candidate["id"], "status": "sample_failed", "reason": str(exc)}
 
 
-def package(candidates, reasons, manifests):
+def package(candidates, reasons, manifests, *, worker=None, source="OpenSurfaces Release 0",
+            slug="opensurfaces", mapping=MATERIALS, limitations=None, attribution=None):
+    if worker is None:
+        worker = lambda row: sample(row, include_files=True)
+    if limitations is None:
+        limitations = ["Sparse annotated polygons only. Unmapped, conflicting and unlabeled pixels are ignored.",
+                       "Image licenses and authors obtained from the official release metadata."]
     tag = os.environ["DATA_RELEASE"]
     bands = defaultdict(list)
     seen_sha = set()
@@ -163,16 +169,16 @@ def package(candidates, reasons, manifests):
             index(int(row["phash63"]))
             seen_sha.add(row["image_sha256"])
     audit_rows = []
-    root = Path("opensurfaces-output")
+    root = Path(f"{slug}-output")
     root.mkdir()
     shards = []
     with (root / "manifest.jsonl").open("w") as manifest, ThreadPoolExecutor(max_workers=12) as pool:
         for offset in range(0, len(candidates), 128):
             with tempfile.TemporaryDirectory() as tmp:
-                pack = Path(tmp) / f"materials-opensurfaces-{offset // 128 + 1:03d}.tar.gz"
+                pack = Path(tmp) / f"materials-{slug}-{offset // 128 + 1:03d}.tar.gz"
                 count = 0
                 with tarfile.open(pack, "w:gz", compresslevel=1) as bundle:
-                    for outcome in pool.map(lambda row: sample(row, include_files=True), candidates[offset:offset+128]):
+                    for outcome in pool.map(worker, candidates[offset:offset+128]):
                         if isinstance(outcome, dict):
                             audit_rows.append(outcome)
                             continue
@@ -195,28 +201,29 @@ def package(candidates, reasons, manifests):
                         checksum = hashlib.file_digest(stream, "sha256").hexdigest()
                     subprocess.run(["gh", "release", "upload", tag, str(pack)], check=True)
                     shards.append({"name": pack.name, "sha256": checksum, "pairs": count})
-            print(f"Processed {len(audit_rows)} of {len(candidates)} OpenSurfaces photos", flush=True)
+            print(f"Processed {len(audit_rows)} of {len(candidates)} {source} photos", flush=True)
     status = Counter(r["status"] for r in audit_rows)
     (root / "collection-audit.json").write_text(json.dumps(audit_rows, indent=2))
     report = {
-        "source": "OpenSurfaces Release 0", "metadata_candidates": len(candidates),
+        "source": source, "metadata_candidates": len(candidates),
         "metadata_exclusions": reasons, "status_counts": status, "training_eligible": status["accepted_train"],
-        "material_mapping_to_dms_source_ids": MATERIALS, "shards": shards,
-        "limitations": ["Sparse annotated polygons only. Unmapped, conflicting and unlabeled pixels are ignored.",
-                        "Image licenses and authors obtained from the official release metadata."]
+        "material_mapping_to_dms_source_ids": mapping, "shards": shards,
+        "limitations": limitations
     }
     (root / "collection-report.json").write_text(json.dumps(report, indent=2))
     (root / "ATTRIBUTION.md").write_text(
+        attribution or (
         "OpenSurfaces by Sean Bell, Paul Upchurch, Noah Snavely and Kavita Bala. "
         "https://opensurfaces.cs.cornell.edu/publications/opensurfaces/\n"
         "Annotations CC BY 4.0. The manifest records each photo author, original page, license and changes.\n"
+        )
     )
     lines = [f'{shard["sha256"]}  {shard["name"]}\n' for shard in shards]
     for path in sorted(root.iterdir()):
         lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n")
     (root / "SHA256SUMS").write_text("".join(lines))
     if not status["accepted_train"]:
-        raise RuntimeError("No OpenSurfaces photos passed collection")
+        raise RuntimeError(f"No {source} photos passed collection")
     print(json.dumps(report), flush=True)
 
 
