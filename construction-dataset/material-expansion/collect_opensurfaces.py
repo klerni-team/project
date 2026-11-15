@@ -36,7 +36,10 @@ def read_table(archive, name):
         return {row["pk"]: row["fields"] for row in json.load(stream)}
 
 
-def audit(archive, prior_manifests):
+BY_SA_LICENSES = {f"http://creativecommons.org/licenses/by-sa/{v}/" for v in ("2.0", "3.0")}
+
+
+def audit(archive, prior_manifests, allowed_licenses=BY_LICENSES):
     prior_flickr = set()
     for manifest in prior_manifests:
         for line in manifest.read_text().splitlines():
@@ -66,7 +69,7 @@ def audit(archive, prior_manifests):
             license_url = licenses.get(photo["license"], {}).get("url")
             username = users.get(photo["flickr_user"], {}).get("username")
             flickr_id = photo["flickr_id"]
-            if license_url not in BY_LICENSES or not username or not flickr_id:
+            if license_url not in allowed_licenses or not username or not flickr_id:
                 reasons["photo_license_or_author"] += 1
                 continue
             if flickr_id in prior_flickr:
@@ -78,6 +81,7 @@ def audit(archive, prior_manifests):
                 continue
             candidates.append({
                 "id": f"os-{key}", "flickr_id": flickr_id, "author": username,
+                "source_record": f"https://opensurfaces.cs.cornell.edu/photos/{key}/",
                 "image_license": license_url.replace("http:", "https:", 1),
                 "annotation_license": "CC-BY-4.0", "scene": scenes[photo["scene_category"]]["name"],
                 "original_page": f"https://www.flickr.com/photos/{quote(username, safe='')}/{flickr_id}/",
@@ -93,7 +97,10 @@ def sample(candidate, include_files=False):
             raw = response.read(25000001)
         if len(raw) > 25000000:
             raise ValueError("photo exceeds 25 MB")
+        preserve_original = "/by-sa/" in candidate["image_license"]
         with Image.open(io.BytesIO(raw)) as original:
+            if preserve_original and (original.format != "JPEG" or original.getexif().get(274, 1) != 1):
+                raise ValueError("BY-SA original is not a directly usable JPEG")
             photo = ImageOps.exif_transpose(original).convert("RGB")
         w, h = photo.size
         if min(w, h) < 256 or abs(w / h / candidate["aspect_ratio"] - 1) > .01:
@@ -121,7 +128,10 @@ def sample(candidate, include_files=False):
         if not include_files:
             return result
         jpeg, png = io.BytesIO(), io.BytesIO()
-        photo.save(jpeg, format="JPEG", quality=95)
+        if preserve_original:
+            jpeg.write(raw)
+        else:
+            photo.save(jpeg, format="JPEG", quality=95)
         Image.fromarray(mask).save(png, format="PNG")
         luminance = np.asarray(photo.convert("L").resize((32, 32)), dtype=float)
         values = dctn(luminance, norm="ortho")[:8, :8].flatten()[1:]
@@ -137,7 +147,9 @@ def sample(candidate, include_files=False):
             "mask_sha256": hashlib.sha256(png.getbuffer()).hexdigest(),
             "width": w, "height": h, "phash63": str(phash),
             "license_evidence": "Photo license and author from OpenSurfaces Release 0.",
-            "changes": "EXIF orientation applied; JPEG re-encoded; material triangles rasterized into a separate mask."
+            "changes": ("Original JPEG bytes preserved; annotation triangles rasterized into a separate mask."
+                        if preserve_original else
+                        "EXIF orientation applied; JPEG re-encoded; material triangles rasterized into a separate mask.")
         })
         return result, row, jpeg.getvalue(), png.getvalue()
     except (OSError, ValueError, IndexError, TypeError) as exc:
@@ -145,7 +157,7 @@ def sample(candidate, include_files=False):
 
 
 def package(candidates, reasons, manifests, *, worker=None, source="OpenSurfaces Release 0",
-            slug="opensurfaces", mapping=MATERIALS, limitations=None, attribution=None):
+            slug="opensurfaces", mapping=MATERIALS, limitations=None, attribution=None, embed_attribution=False):
     if worker is None:
         worker = lambda row: sample(row, include_files=True)
     if limitations is None:
@@ -177,6 +189,7 @@ def package(candidates, reasons, manifests, *, worker=None, source="OpenSurfaces
             with tempfile.TemporaryDirectory() as tmp:
                 pack = Path(tmp) / f"materials-{slug}-{offset // 128 + 1:03d}.tar.gz"
                 count = 0
+                credits = []
                 with tarfile.open(pack, "w:gz", compresslevel=1) as bundle:
                     for outcome in pool.map(worker, candidates[offset:offset+128]):
                         if isinstance(outcome, dict):
@@ -196,6 +209,13 @@ def package(candidates, reasons, manifests, *, worker=None, source="OpenSurfaces
                         manifest.write(json.dumps(row) + "\n")
                         audit_rows.append(dict(result, status="accepted_train"))
                         count += 1
+                        if embed_attribution:
+                            credits.append(row)
+                    if credits:
+                        data = ("\n".join(json.dumps(row) for row in credits) + "\n").encode()
+                        entry = tarfile.TarInfo(f"attribution/{pack.name}.jsonl")
+                        entry.size = len(data)
+                        bundle.addfile(entry, io.BytesIO(data))
                 if count:
                     with pack.open("rb") as stream:
                         checksum = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -232,13 +252,23 @@ def main():
     parser.add_argument("archive", type=Path)
     parser.add_argument("--prior-manifest", type=Path, action="append", default=[])
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--by-sa", action="store_true", help="Select BY-SA 2.0/3.0 photos and preserve original JPEG bytes.")
     parser.add_argument("--sample-size", type=int, default=24)
     parser.add_argument("--output", type=Path, default=Path("opensurfaces-inventory.json"))
     args = parser.parse_args()
-    candidates, reasons = audit(args.archive, args.prior_manifest)
+    licenses = BY_SA_LICENSES if args.by_sa else BY_LICENSES
+    candidates, reasons = audit(args.archive, args.prior_manifest, allowed_licenses=licenses)
     print(f"Found {len(candidates)} metadata candidates", flush=True)
     if args.publish:
-        package(candidates, reasons, args.prior_manifest)
+        if args.by_sa:
+            package(candidates, reasons, args.prior_manifest, source="OpenSurfaces Release 0 (CC BY-SA photos)",
+                    slug="opensurfaces-sa", embed_attribution=True,
+                    attribution="OpenSurfaces by Sean Bell, Paul Upchurch, Noah Snavely and Kavita Bala.\n"
+                                "https://opensurfaces.cs.cornell.edu/publications/opensurfaces/\n"
+                                "Photo files are unchanged and retain their individual CC BY-SA licenses.\n"
+                                "Each archive includes photo credits and license links. Separate annotations: CC BY 4.0.\n")
+        else:
+            package(candidates, reasons, args.prior_manifest)
         return
     import random
     subset = random.Random(42).sample(candidates, min(args.sample_size, len(candidates)))
