@@ -1,0 +1,44 @@
+name: Collect verified interior material pairs
+on:
+  push:
+    branches: [construction-dataset]
+    paths: ['.github/workflows/material-expansion.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DATA_RELEASE: materials-dms-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install image validation dependencies
+        run: python -m pip install pillow==13.0.0 numpy scipy==1.16.3 opencv-python-headless==4.12.0.88
+      - name: Get prior photos for overlap exclusion
+        run: |
+          gh release download interiors-43632266881 --pattern interiors-restored.tar.gz --dir /tmp/prior
+          python - <<'PY'
+          import tarfile
+          with tarfile.open("/tmp/prior/interiors-restored.tar.gz") as t: t.extractall("old-data",filter="data")
+          PY
+          rm /tmp/prior/interiors-restored.tar.gz
+      - name: Create staging release
+        run: gh release create "$DATA_RELEASE" --draft --target "$GITHUB_SHA" --title "Additional indoor material pairs — research only" --notes-file construction-dataset/material-expansion/README.md
+      - name: Collect and verify photos and material masks
+        run: python -u construction-dataset/material-expansion/collect.py
+      - name: Publish complete collection and audit
+        run: |
+          gh release upload "$DATA_RELEASE" material-expansion/manifest.jsonl material-expansion/taxonomy.json material-expansion/collection-report.json material-expansion/collection-audit.json material-expansion/ATTRIBUTION.md material-expansion/SHA256SUMS
+          gh release edit "$DATA_RELEASE" --draft=false
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: material-collection-reports
+          path: material-expansion/*.json
+          if-no-files-found: warn
