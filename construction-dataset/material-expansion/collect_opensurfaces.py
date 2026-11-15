@@ -39,6 +39,13 @@ def read_table(archive, name):
 BY_SA_LICENSES = {f"http://creativecommons.org/licenses/by-sa/{v}/" for v in ("2.0", "3.0")}
 
 
+NC_LICENSES = {
+    "http://creativecommons.org/licenses/by-nc/2.0/",
+    "http://creativecommons.org/licenses/by-nc-sa/2.0/",
+    "http://creativecommons.org/licenses/by-nc-sa/3.0/",
+}
+
+
 def audit(archive, prior_manifests, allowed_licenses=BY_LICENSES):
     prior_flickr = set()
     for manifest in prior_manifests:
@@ -97,10 +104,10 @@ def sample(candidate, include_files=False):
             raw = response.read(25000001)
         if len(raw) > 25000000:
             raise ValueError("photo exceeds 25 MB")
-        preserve_original = "/by-sa/" in candidate["image_license"]
+        preserve_original = any(marker in candidate["image_license"] for marker in ("/by-sa/", "/by-nc",))
         with Image.open(io.BytesIO(raw)) as original:
             if preserve_original and (original.format != "JPEG" or original.getexif().get(274, 1) != 1):
-                raise ValueError("BY-SA original is not a directly usable JPEG")
+                raise ValueError("Licensed original is not a directly usable JPEG")
             photo = ImageOps.exif_transpose(original).convert("RGB")
         w, h = photo.size
         if min(w, h) < 256 or abs(w / h / candidate["aspect_ratio"] - 1) > .01:
@@ -252,15 +259,29 @@ def main():
     parser.add_argument("archive", type=Path)
     parser.add_argument("--prior-manifest", type=Path, action="append", default=[])
     parser.add_argument("--publish", action="store_true")
-    parser.add_argument("--by-sa", action="store_true", help="Select BY-SA 2.0/3.0 photos and preserve original JPEG bytes.")
+    license_group = parser.add_mutually_exclusive_group()
+    license_group.add_argument("--by-sa", action="store_true", help="Select BY-SA photos and preserve original JPEG bytes.")
+    license_group.add_argument("--noncommercial", action="store_true",
+                               help="Select BY-NC and BY-NC-SA photos for noncommercial research.")
     parser.add_argument("--sample-size", type=int, default=24)
     parser.add_argument("--output", type=Path, default=Path("opensurfaces-inventory.json"))
     args = parser.parse_args()
-    licenses = BY_SA_LICENSES if args.by_sa else BY_LICENSES
+    licenses = NC_LICENSES if args.noncommercial else BY_SA_LICENSES if args.by_sa else BY_LICENSES
     candidates, reasons = audit(args.archive, args.prior_manifest, allowed_licenses=licenses)
     print(f"Found {len(candidates)} metadata candidates", flush=True)
     if args.publish:
-        if args.by_sa:
+        if args.noncommercial:
+            package(candidates, reasons, args.prior_manifest, source="OpenSurfaces Release 0 (noncommercial photos)",
+                    slug="opensurfaces-nc", embed_attribution=True,
+                    limitations=["Noncommercial research photos. Each photo retains its own CC license.",
+                                 "Unmapped, conflicting and unlabeled pixels are ignored.",
+                                 "Image license and author come from the official release metadata."],
+                    attribution="OpenSurfaces by Sean Bell, Paul Upchurch, Noah Snavely and Kavita Bala.\n"
+                                "https://opensurfaces.cs.cornell.edu/publications/opensurfaces/\n"
+                                "Original JPEGs retain individual CC BY-NC or CC BY-NC-SA licenses.\n"
+                                "Noncommercial research only. Each archive includes credits and license links.\n"
+                                "Separate annotations: CC BY 4.0.\n")
+        elif args.by_sa:
             package(candidates, reasons, args.prior_manifest, source="OpenSurfaces Release 0 (CC BY-SA photos)",
                     slug="opensurfaces-sa", embed_attribution=True,
                     attribution="OpenSurfaces by Sean Bell, Paul Upchurch, Noah Snavely and Kavita Bala.\n"
