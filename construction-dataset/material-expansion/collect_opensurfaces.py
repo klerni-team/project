@@ -164,7 +164,7 @@ def sample(candidate, include_files=False):
 
 
 def package(candidates, reasons, manifests, *, worker=None, source="OpenSurfaces Release 0",
-            slug="opensurfaces", mapping=MATERIALS, limitations=None, attribution=None, embed_attribution=False):
+            slug="opensurfaces", mapping=MATERIALS, limitations=None, attribution=None, embed_attribution=False, worker_count=12):
     if worker is None:
         worker = lambda row: sample(row, include_files=True)
     if limitations is None:
@@ -191,7 +191,7 @@ def package(candidates, reasons, manifests, *, worker=None, source="OpenSurfaces
     root = Path(f"{slug}-output")
     root.mkdir()
     shards = []
-    with (root / "manifest.jsonl").open("w") as manifest, ThreadPoolExecutor(max_workers=12) as pool:
+    with (root / "manifest.jsonl").open("w") as manifest, ThreadPoolExecutor(max_workers=worker_count) as pool:
         for offset in range(0, len(candidates), 128):
             with tempfile.TemporaryDirectory() as tmp:
                 pack = Path(tmp) / f"materials-{slug}-{offset // 128 + 1:03d}.tar.gz"
