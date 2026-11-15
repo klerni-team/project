@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "repository": "klerni-team/project",
+  "branch": "construction-dataset",
+  "target": {
+    "metric": "per-class IoU",
+    "minimum": 0.9,
+    "classes": 21,
+    "claim_requires": "fixed validation gate followed by an untouched independent test; report unsupported materials separately",
+    "guaranteed": false
+  },
+  "state": {
+    "phase": "collecting_next_batch",
+    "last_training_release": "interiors-trained-43691723645",
+    "baseline_independent_test_miou": 0.27639755606651306,
+    "training_blocker": "GPU execution environment not connected/verified; local nvidia-smi unavailable",
+    "gpu_finetuning_implemented": false
+  },
+  "collection": {
+    "script": "construction-dataset/material-expansion/collect_next.py",
+    "workflow": ".github/workflows/material-expansion.yml",
+    "max_new_candidates_per_cycle": 3000,
+    "source_splits_allowed": [
+      "train"
+    ],
+    "prior_manifests_and_audits_required": true,
+    "license": "CC-BY-NC-4.0 research only"
+  },
+  "training": {
+    "require_verified_gpu_for_backbone_finetuning": true,
+    "do_not_repeat_frozen_head_job_unchanged": true,
+    "preserve_prior_best_weights": true,
+    "merge_only_training_eligible_records": true,
+    "validation_locked_to": "interiors-trained-43691723645/split.json",
+    "prior_test_already_inspected": true,
+    "new_final_test_required_before_final_target_claim": true
+  },
+  "loop": {
+    "max_active_jobs": 1,
+    "max_cycles_without_validation_gain": 3,
+    "min_mean_iou_gain": 0.005,
+    "max_cycles_per_review": 5,
+    "stop_and_report": [
+      "no usable new data",
+      "GPU unavailable",
+      "same failure repeated twice",
+      "three comparable cycles without validation gain",
+      "manual label review needed",
+      "five cycles completed; review evidence before more compute"
+    ],
+    "never_claim_goal_from_data_count": true,
+    "no_paid_compute_without_defined_budget": true
+  },
+  "limitations": [
+    "DMS does not cover every construction material separately",
+    "No building-level split verification",
+    "Human annotation review still required",
+    "90% cannot be guaranteed by repeating collection and training"
+  ]
+}
