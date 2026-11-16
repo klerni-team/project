@@ -1,4 +1,4 @@
-name: Continue DMS material training with expanded data
+name: Fine-tune material head on verified mixed corpus
 on:
   push:
     branches: [construction-dataset]
@@ -12,7 +12,7 @@ permissions:
 jobs:
   train:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 355
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -24,48 +24,34 @@ jobs:
         run: |
           python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install transformers==4.57.1 pillow==13.0.0 scipy==1.16.3 matplotlib==3.10.7
-      - name: Download and verify DMS collection, base model and previous trained heads
+      - name: Prepare disk space for frozen feature cache
         run: |
-          gh release download materials-dms-43685792992 --dir dms-data
-          (cd dms-data && sha256sum -c SHA256SUMS)
-          gh release download materials-dms-43720376332 --dir dms-expansion
-          (cd dms-expansion && sha256sum -c SHA256SUMS)
-          gh release download interiors-trained-43691723645 --pattern interiors-dms-heads.tar.gz --dir /tmp/resume
-          gh release download interiors-trained-43635573640 --pattern interiors-all-heads.tar.gz --dir /tmp/previous
-          gh release download interiors-model-43633804001 --pattern mask2former-interiors-baseline.tar.gz --dir /tmp/base
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h .
+      - name: Download verified baseline and best saved material head
+        run: |
+          PARENT_RELEASE=$(python -c 'import json; print(json.load(open("construction-dataset/model/iteration-policy.json"))["state"]["last_training_release"])')
+          gh release download "$PARENT_RELEASE" --pattern interiors-dms-heads.tar.gz --dir /tmp/material-resume
+          gh release download interiors-model-43633804001 --pattern mask2former-interiors-baseline.tar.gz --dir /tmp/material-base
           python - <<'PY'
-          import json, tarfile, shutil
           from pathlib import Path
-          original = Path("dms-data")
-          expansion = Path("dms-expansion")
-          manifests = [
-              [json.loads(line) for line in (folder / "manifest.jsonl").read_text().splitlines()]
-              for folder in (original, expansion)
-          ]
-          assert len(manifests[1]) == 2558
-          assert all(r["split"] == "train" and r["training_eligible"] for r in manifests[1])
-          for field in ("id", "image_path", "mask_path"):
-              assert not ({r[field] for r in manifests[0]} & {r[field] for r in manifests[1]}), field
-          for folder in (original, expansion):
-              for pack in sorted(folder.glob("materials-dms-*.tar.gz")):
-                  with tarfile.open(pack) as t:
-                      t.extractall(original, filter="data")
-                  pack.unlink()
-          (original / "manifest.jsonl").write_text(
-              "".join(json.dumps(row) + "\n" for rows in manifests for row in rows)
-          )
-          with tarfile.open("/tmp/resume/interiors-dms-heads.tar.gz") as t:
-              t.extractall("/tmp/resume", filter="data")
-          shutil.move("/tmp/resume/trained-dms", "resume")
-          with tarfile.open("/tmp/previous/interiors-all-heads.tar.gz") as t: t.extractall("/tmp/parent",filter="data")
-          shutil.move("/tmp/parent/trained-all","previous")
-          with tarfile.open("/tmp/base/mask2former-interiors-baseline.tar.gz") as t: t.extractall(".",filter="data")
+          import shutil
+          import tarfile
+          with tarfile.open("/tmp/material-resume/interiors-dms-heads.tar.gz") as archive:
+              archive.extractall("/tmp/material-resume", filter="data")
+          shutil.move("/tmp/material-resume/trained-dms", "resume")
+          with tarfile.open("/tmp/material-base/mask2former-interiors-baseline.tar.gz") as archive:
+              archive.extractall(".", filter="data")
           PY
-          (cd previous && sha256sum -c SHA256SUMS)
           (cd resume && sha256sum -c SHA256SUMS)
           (cd model-package && sha256sum -c SHA256SUMS)
-      - name: Continue from best DMS weights for 20 epochs and evaluate fixed benchmark
-        run: python -u construction-dataset/model/train_dms.py --resume-dms
+          mkdir previous
+          cp resume/previous-heads.safetensors previous/heads.safetensors
+          cp resume/previous-adapter-config.json previous/adapter_config.json
+      - name: Extract features and train on verified photos
+        run: |
+          python -u construction-dataset/model/train_dms.py --resume-dms --epochs 12 \
+            --mixed-policy construction-dataset/model/iteration-policy.json
       - name: Preserve training reports and checkpoints
         if: always()
         uses: actions/upload-artifact@v4
@@ -75,4 +61,4 @@ jobs:
           if-no-files-found: warn
       - name: Publish research checkpoint, plots and fixed benchmark results
         run: |
-          gh release create "interiors-trained-${GITHUB_RUN_ID}" --target "$GITHUB_SHA" --title "DMS material branch — research-only training" --notes-file trained-dms/training-report.json interiors-dms-heads.tar.gz trained-dms/training-report.json trained-dms/history.json trained-dms/split.json trained-dms/coverage.json trained-dms/learning-curves.png
+          gh release create "interiors-trained-${GITHUB_RUN_ID}" --target "$GITHUB_SHA" --title "Mixed-source materials — research-only training" --notes-file trained-dms/training-report.json interiors-dms-heads.tar.gz trained-dms/training-report.json trained-dms/history.json trained-dms/split.json trained-dms/coverage.json trained-dms/learning-curves.png
