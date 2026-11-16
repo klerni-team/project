@@ -6,14 +6,21 @@ import re
 import subprocess
 import tarfile
 import tempfile
+import time
 
 
 def download(tag, asset, folder):
-    subprocess.run(
-        ["gh", "release", "download", tag, "--pattern", asset, "--dir", str(folder)],
-        check=True,
-    )
-    return folder / asset
+    destination = folder / asset
+    command = ["gh", "release", "download", tag, "--pattern", asset, "--dir", str(folder)]
+    for attempt in range(3):
+        try:
+            subprocess.run(command, check=True)
+            return destination
+        except subprocess.CalledProcessError:
+            destination.unlink(missing_ok=True)
+            if attempt == 2:
+                raise
+            time.sleep(5 * (attempt + 1))
 
 
 def digest(path):
