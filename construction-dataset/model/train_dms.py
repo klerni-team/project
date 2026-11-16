@@ -1,5 +1,5 @@
 """Research-only DMS material branch: transferred linear weights + nonlinear residual."""
-import argparse,io,json,hashlib,random,tarfile,shutil
+import argparse,io,json,hashlib,random,re,tarfile,shutil
 from pathlib import Path
 import numpy as np
 import torch
@@ -69,13 +69,59 @@ def plot(history):
  for ax in axes:ax.set_xlabel('Epoch');ax.grid(alpha=.2);ax.legend()
  fig.tight_layout();fig.savefig(OUT/'learning-curves.png',dpi=160);plt.close(fig)
 
+def load_feature_shards(root, groups, expected_labels):
+ groups={split:group for split,group in groups.items() if split!='test'}
+ paths={split:[] for split in groups};hist=np.zeros(expected_labels,np.int64)
+ excluded=[];by_id={};seen={}
+ rows={str(row['id']):row for group in groups.values() for row in group}
+ metadata_files=sorted(root.glob('frozen-features-*/shard.json'))
+ if not metadata_files:raise ValueError('No completed feature shards')
+ shard_count=len(metadata_files)
+ indices=set()
+ for metadata in metadata_files:
+  shard=json.loads(metadata.read_text())
+  index=shard['index']
+  if shard['count']!=shard_count or not 0<=index<shard_count or index in indices:
+   raise ValueError('Shard identifiers or counts do not agree')
+  indices.add(index)
+  counts=np.asarray(shard['train_class_histogram'],dtype=np.int64)
+  if counts.shape!=(expected_labels,) or np.any(counts<0):raise ValueError('Invalid class histogram')
+  hist+=counts
+  for image_id in shard['encoded_ids']:
+   if image_id in seen or image_id not in rows:raise ValueError(f'Unexpected or repeated feature ID: {image_id}')
+   path=metadata.parent/f'{image_id}.npz'
+   if not path.is_file():raise ValueError(f'Missing feature file: {path}')
+   seen[image_id]=path
+  for item in shard['excluded']:
+   image_id=str(item['id'])
+   if image_id in seen or image_id not in rows or rows[image_id]['split']!='train':
+    raise ValueError(f'Unexpected or repeated exclusion: {image_id}')
+   seen[image_id]=None
+   excluded.append(item)
+ if set(seen)!=set(rows):raise ValueError(f'Missing features or exclusion records for {len(rows.keys()-seen.keys())} selected photos')
+ for split, group in groups.items():
+  for row in group:
+   path=seen[str(row['id'])]
+   if path is not None:
+    paths[split].append(path);by_id[str(path)]=row['id']
+ if not all(paths.values()):raise ValueError('A split has no usable features')
+ return paths,hist,excluded,by_id
+
+
 def main():
  parser=argparse.ArgumentParser(description=__doc__)
  parser.add_argument('--resume-dms',action='store_true',help='Start from the previous DMS material checkpoint on an expanded train split.')
  parser.add_argument('--mixed-policy',type=Path,help='Stream the verified corpus from the releases in this policy.')
  parser.add_argument('--epochs',type=int,default=20)
+ mode=parser.add_mutually_exclusive_group()
+ mode.add_argument('--feature-shard',type=int,nargs=2,metavar=('INDEX','COUNT'))
+ mode.add_argument('--cached-shards',type=Path)
  args=parser.parse_args()
  if args.epochs<1:parser.error('--epochs must be positive')
+ if (args.feature_shard or args.cached_shards) and not args.mixed_policy:
+  parser.error('Feature shard modes require --mixed-policy')
+ shard_index,shard_count=args.feature_shard or (0,1)
+ if not 0<=shard_index<shard_count:parser.error('Invalid shard index/count')
  if args.mixed_policy and not args.resume_dms:parser.error('--mixed-policy requires --resume-dms')
  parent_release='interiors-trained-43691723645' if args.resume_dms else 'interiors-trained-43635573640'
  data_releases=['materials-dms-43685792992']
@@ -96,6 +142,7 @@ def main():
   assert len(groups['validation'])==1024 and len(groups['test'])==1053
  assert all(groups.values()), 'an entire split is empty'
  selected=[r for group in groups.values() for r in group]
+ assert all(re.fullmatch(r'[A-Za-z0-9_-]+',str(r['id'])) for r in selected), 'invalid photo ID'
  for key in ('id','image_path','mask_path','image_sha256','source_image_id'):
   assert len({r[key] for r in selected})==len(selected),f'duplicate selected {key}'
  if args.resume_dms:
@@ -106,48 +153,59 @@ def main():
  sets=[{r['source_image_id'] for r in groups[s]} for s in groups];assert not (sets[0]&sets[1] or sets[0]&sets[2] or sets[1]&sets[2])
  (OUT/'split.json').write_text(json.dumps({s:[r['id'] for r in rs] for s,rs in groups.items()},indent=2))
  print('SPLITS',json.dumps({s:len(rs) for s,rs in groups.items()}),flush=True)
- processor=AutoImageProcessor.from_pretrained('model-package',local_files_only=True,use_fast=False)
- base=Mask2FormerForUniversalSegmentation.from_pretrained('model-package',local_files_only=True,use_safetensors=True).eval()
- for p in base.parameters():p.requires_grad_(False)
- paths={'train':[],'validation':[]};hist=np.zeros(len(LABELS),np.int64);excluded=[];id_for_path={}
- if args.mixed_policy:
-  paths['test']=[]
-  photos=((row,(photo,mask)) for row,photo,mask in pairs(releases))
+ limit=320 if args.feature_shard or args.cached_shards else 512 if args.mixed_policy else 1024
+ if args.cached_shards:
+  paths,hist,excluded,id_for_path=load_feature_shards(args.cached_shards,groups,len(LABELS))
+  print('VERIFIED_FEATURE_COUNTS',json.dumps({split:len(p) for split,p in paths.items()}),flush=True)
  else:
-  photos=((row,None) for split in paths for row in groups[split])
- progress={split:0 for split in paths}
- limit=512 if args.mixed_policy else 1024
- uniform=248 if args.mixed_policy else 512
- per_class=12 if args.mixed_policy else 24
- for row,pair in photos:
-  split=row['split']
-  f,t,valid=encode(row,base,processor,pair)
-  progress[split]+=1
-  if not len(valid):
-   excluded.append({'id':row['id'],'split':split,'reason':'no usable labels after resizing'})
-   if args.mixed_policy and split!='train':raise ValueError(f'Fixed evaluation example lost its labels: {row["id"]}')
-   continue
-  if split=='train':
-   hist+=np.bincount(t[valid],minlength=len(LABELS))
-   if len(valid)>limit:
-    # Sample across the image and reserve examples for rare labels.
-    selected=[rng.choice(valid,uniform,replace=False)]
-    for label in np.unique(t[valid]):
-     candidates=valid[t[valid]==label]
-     selected.append(rng.choice(candidates,min(per_class,len(candidates)),replace=False))
-    valid=np.unique(np.concatenate(selected))
-  path=CACHE/f"{row['id']}.npz"
-  dtype='float32' if split=='test' else 'float16'
-  np.savez(path,x=f[valid].astype(dtype),y=t[valid].astype('uint8'))
-  paths[split].append(path);id_for_path[str(path)]=row['id']
-  if progress[split]%200==0:
-   print(f'FEATURES {split}: {progress[split]}/{len(groups[split])}',flush=True)
- if args.mixed_policy:
-  assert all(progress[s]==len(groups[s]) for s in paths), 'stream did not visit entire verified corpus'
-  # Archive order may differ from the original validation manifest order.
-  validation_order={str(CACHE/f"{r['id']}.npz"):i for i,r in enumerate(groups['validation'])}
-  paths['validation'].sort(key=lambda p:validation_order[str(p)])
- del base
+  processor=AutoImageProcessor.from_pretrained('model-package',local_files_only=True,use_fast=False)
+  base=Mask2FormerForUniversalSegmentation.from_pretrained('model-package',local_files_only=True,use_safetensors=True).eval()
+  for p in base.parameters():p.requires_grad_(False)
+  paths={'train':[],'validation':[]};hist=np.zeros(len(LABELS),np.int64);excluded=[];id_for_path={}
+  if args.mixed_policy:
+   paths['test']=[]
+   photos=((row,(photo,mask)) for row,photo,mask in pairs(releases,shard_index,shard_count)
+           if not args.feature_shard or row['split']!='test')
+  else:
+   photos=((row,None) for split in paths for row in groups[split])
+  progress={split:0 for split in paths}
+  uniform=144 if args.feature_shard else 248 if args.mixed_policy else 512
+  per_class=8 if args.feature_shard else 12 if args.mixed_policy else 24
+  for row,pair in photos:
+   split=row['split']
+   f,t,valid=encode(row,base,processor,pair)
+   progress[split]+=1
+   if not len(valid):
+    excluded.append({'id':row['id'],'split':split,'reason':'no usable labels after resizing'})
+    if args.mixed_policy and split!='train':raise ValueError(f'Fixed evaluation example lost its labels: {row["id"]}')
+    continue
+   if split=='train':
+    hist+=np.bincount(t[valid],minlength=len(LABELS))
+    if len(valid)>limit:
+     # Sample across the image and reserve examples for rare labels.
+     selected=[rng.choice(valid,uniform,replace=False)]
+     for label in np.unique(t[valid]):
+      candidates=valid[t[valid]==label]
+      selected.append(rng.choice(candidates,min(per_class,len(candidates)),replace=False))
+     valid=np.unique(np.concatenate(selected))
+   path=CACHE/f"{row['id']}.npz"
+   dtype='float32' if split=='test' else 'float16'
+   np.savez(path,x=f[valid].astype(dtype),y=t[valid].astype('uint8'))
+   paths[split].append(path);id_for_path[str(path)]=row['id']
+   if progress[split]%200==0:
+    print(f'FEATURES {split}: {progress[split]}/{len(groups[split])}',flush=True)
+  if args.feature_shard:
+   summary={'index':shard_index,'count':shard_count,'encoded_ids':[str(i) for i in id_for_path.values()],
+            'train_class_histogram':hist.tolist(),'excluded':excluded}
+   (CACHE/'shard.json').write_text(json.dumps(summary,indent=2))
+   print('SHARD_READY',json.dumps({'index':shard_index,'encoded':sum(map(len,paths.values())),'excluded':len(excluded)}),flush=True)
+   return
+  if args.mixed_policy:
+   assert all(progress[s]==len(groups[s]) for s in paths), 'stream did not visit entire verified corpus'
+   # Archive order may differ from the original validation manifest order.
+   validation_order={str(CACHE/f"{r['id']}.npz"):i for i,r in enumerate(groups['validation'])}
+   paths['validation'].sort(key=lambda p:validation_order[str(p)])
+  del base
  head=MaterialHead();copied=[]
  if args.resume_dms:
   resume_config=json.loads(Path('resume/adapter_config.json').read_text())
@@ -174,15 +232,23 @@ def main():
   save_file(head.state_dict(),str(OUT/'last-material-head.safetensors'));torch.save({'optimizer':optimizer.state_dict(),'epoch':epoch},OUT/'optimizer-state.pt')
   (OUT/'history.json').write_text(json.dumps(history,indent=2));plot(history);print('EPOCH',json.dumps(record),flush=True)
  assert len(visited)==len(paths['train']);head.load_state_dict(load_file(str(OUT/'material-head.safetensors')));head.eval();final=evaluate(head,cached(paths['validation']))
- if args.mixed_policy:
+ if args.mixed_policy and not args.cached_shards:
   test=evaluate(head,cached(paths['test']))
  else:
-  # Evaluate the fixed test split after checkpoint selection.
+  # The held-out test is evaluated with full-precision features after checkpoint selection.
+  if args.cached_shards:
+   test_releases=[(tag,folder,packs,[r for r in rows if r['split']=='test'])
+                  for tag,folder,packs,rows in releases if any(r['split']=='test' for r in rows)]
+   test_photos=((r,(photo,mask)) for r,photo,mask in pairs(test_releases))
+   processor=AutoImageProcessor.from_pretrained('model-package',local_files_only=True,use_fast=False)
+  else:
+   test_photos=((r,None) for r in groups['test'])
   base=Mask2FormerForUniversalSegmentation.from_pretrained('model-package',local_files_only=True,use_safetensors=True).eval()
   def test_items():
-   for i,row in enumerate(groups['test']):
-    f,t,valid=encode(row,base,processor)
+   for i,(row,pair) in enumerate(test_photos):
+    f,t,valid=encode(row,base,processor,pair)
     if len(valid):yield f[valid],t[valid]
+    elif args.cached_shards:raise ValueError(f'Fixed test example lost its labels: {row["id"]}')
     else:excluded.append({'id':row['id'],'split':'test','reason':'no usable labels after resizing'})
     if (i+1)%200==0:print(f'TEST {i+1}/{len(groups["test"])}',flush=True)
   test=evaluate(head,test_items())
