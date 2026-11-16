@@ -71,7 +71,8 @@ def registry(policy_path, workspace):
     return tags, rows, releases
 
 
-def pairs(releases):
+def pairs(releases, shard_index=0, shard_count=1):
+    pack_index = 0
     for tag, folder, packs, rows in releases:
         by_path = {}
         for row in rows:
@@ -80,6 +81,10 @@ def pairs(releases):
         seen = set()
         pending = {}
         for name, expected in sorted(packs.items()):
+            assigned = pack_index % shard_count == shard_index
+            pack_index += 1
+            if not assigned:
+                continue
             with tempfile.TemporaryDirectory(dir=folder) as temp:
                 bundle = download(tag, name, Path(temp))
                 if digest(bundle) != expected:
@@ -104,5 +109,5 @@ def pairs(releases):
                 if pending:
                     raise ValueError(f"Photo and mask separated or missing in {tag}/{name}")
             print(f"ARCHIVE {tag}/{name}: {len(seen)//2}/{len(rows)} pairs", flush=True)
-        if len(seen) != len(by_path):
+        if shard_count == 1 and len(seen) != len(by_path):
             raise ValueError(f"Missing {len(by_path)-len(seen)} files in {tag}")
