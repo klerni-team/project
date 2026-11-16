@@ -10,7 +10,7 @@
     "guaranteed": false
   },
   "state": {
-    "phase": "blocked_missing_labeled_data",
+    "phase": "mixed_cpu_head_training",
     "last_training_release": "interiors-trained-43726371232",
     "baseline_independent_test_miou": 0.27639755606651306,
     "gpu_finetuning_implemented": false,
@@ -74,7 +74,10 @@
         "download_status": "Official file listing accessible; archive download returned HTTP 403 in current environment.",
         "new_training_photos_added": 0
       }
-    }
+    },
+    "active_training_run": 43836716472,
+    "active_training_mode": "12 CPU epochs on the verified mixed corpus, best compatible checkpoint, frozen backbone",
+    "active_training_train_photo_count": 41047
   },
   "collection": {
     "script": "construction-dataset/material-expansion/collect_next.py",
