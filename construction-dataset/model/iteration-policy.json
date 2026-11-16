@@ -10,22 +10,20 @@
     "guaranteed": false
   },
   "state": {
-    "phase": "recovering_dms_open_images",
+    "phase": "blocked_missing_labeled_data",
     "last_training_release": "interiors-trained-43726371232",
     "baseline_independent_test_miou": 0.27639755606651306,
     "gpu_finetuning_implemented": false,
-    "last_collection_release": "materials-cocostuff-recovery-43777276739",
-    "last_collection_run": 43777276739,
-    "last_collection_verified_train_pairs": 750,
-    "last_collection_excluded": 1,
+    "last_collection_release": "materials-dms-recovery-43783496917",
+    "last_collection_run": 43783496917,
+    "last_collection_verified_train_pairs": 1188,
+    "last_collection_excluded": 1602,
     "last_checked_date": "2026-11-15",
-    "active_training_mode": "20 CPU epochs, frozen backbone, resumed best DMS head, expanded training split",
     "full_model_training_blocker": "No connected/verified GPU execution environment; local nvidia-smi command not found. Full GPU fine-tuning code remains unimplemented.",
-    "active_collection_run": 43783496917,
-    "known_training_eligible": 39859,
-    "source_gap": "DMS alone cannot supply 50000 unique indoor training photos; additional sources and compatible verified annotations needed.",
+    "known_training_eligible": 41047,
+    "source_gap": "A further 8953 unique real indoor training photos with aligned, human-origin material masks and verified photo/annotation permissions are required. Previously reviewed sources cannot supply the verified shortfall.",
     "remaining_dms_candidates": 0,
-    "remaining_to_training_target": 10141,
+    "remaining_to_training_target": 8953,
     "cocostuff_candidates_not_yet_eligible": 9599,
     "cocostuff_rights_pilot": {
       "audited": 128,
@@ -37,7 +35,24 @@
       "audited": 32,
       "verified_pairs": 6
     },
-    "cocostuff_alignment_retry_candidates": 751
+    "cocostuff_alignment_retry_candidates": 751,
+    "fixed_evaluation_counts": {
+      "validation": 1024,
+      "test": 1053
+    },
+    "evaluation_split_reference": "interiors-trained-43726371232/split.json",
+    "release_tags": [
+      "materials-dms-43685792992",
+      "materials-dms-43720376332",
+      "materials-dms-43740576307",
+      "materials-opensurfaces-43746023532",
+      "materials-multilum-43750528541",
+      "materials-opensurfaces-sa-43754949491",
+      "materials-opensurfaces-nc-43761049909",
+      "materials-cocostuff-43770328104",
+      "materials-cocostuff-recovery-43777276739",
+      "materials-dms-recovery-43783496917"
+    ]
   },
   "collection": {
     "script": "construction-dataset/material-expansion/collect_next.py",
