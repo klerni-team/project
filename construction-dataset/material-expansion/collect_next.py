@@ -54,13 +54,23 @@ def main():
  (ROOT/'taxonomy.json').write_text(json.dumps(taxonomy,indent=2))
  names=taxonomy['names'];candidates=[r for r in data if 'indoor' in r.get('predicted_scene_level1_attributes',[]) and any(r['label_fraction'][i]>=.02 for i in TARGETS)]
  # Continue from all prior manifests and audits; never consume validation/test.
- previous=[];attempted=set()
+ previous=[];attempted=set();retry_ids=set()
+ recovery=os.environ.get('RECOVER_RATE_LIMITED')=='1'
  for path in Path('previous-data').rglob('manifest.jsonl'):
   previous.extend(json.loads(l) for l in path.read_text().splitlines())
  for path in Path('previous-data').rglob('collection-audit.json'):
-  attempted.update(r['id'] for r in json.loads(path.read_text()))
+  audited=json.loads(path.read_text())
+  attempted.update(r['id'] for r in audited)
+  if recovery:
+   retry_ids.update(r['id'] for r in audited
+                    if r.get('split')=='train' and r.get('status')=='download_or_alignment_failed'
+                    and any('429' in error for error in r.get('errors',[])))
  attempted.update(r['id'] for r in previous)
- remaining=[r for r in candidates if r['split']=='train' and r['id'] not in attempted]
+ accepted_ids={r['id'] for r in previous}
+ accepted_sources={r.get('source_image_id') for r in previous}
+ recovery_ids=retry_ids-accepted_ids
+ remaining=[r for r in candidates if r['split']=='train' and
+            (r['id'] in recovery_ids if recovery else r['id'] not in attempted)]
  random.Random(42).shuffle(remaining);selection={}
  buckets=[[r for r in remaining if r['label_fraction'][target]>=.02] for target in TARGETS]
  limit=int(os.environ.get('MAX_NEW_CANDIDATES','3000'))
@@ -85,13 +95,20 @@ def main():
  audit=[];chosen=[]
  for r in selection.values():
   md=r['openimages_metadata']
-  if photoid(md) in oldids:audit.append({'id':r['id'],'status':'excluded_existing_source','split':r['split']});continue
+  if photoid(md) in oldids or md['ImageID'] in accepted_sources:audit.append({'id':r['id'],'status':'excluded_existing_source','split':r['split']});continue
   if md.get('License')!='https://creativecommons.org/licenses/by/2.0/' or not md.get('Author'):audit.append({'id':r['id'],'status':'excluded_license_metadata','split':r['split']});continue
   chosen.append(r)
  rows=[];shards=[]
  def collect(pair):
   r,mask_bytes=pair;md=r['openimages_metadata'];errors=[]
-  for url in dict.fromkeys([md['OriginalURL'],md.get('Thumbnail300KURL')]):
+  if recovery:
+   subset=md.get('Subset','train')
+   if subset not in ('train','validation','test'):
+    return {'id':r['id'],'split':r['split'],'status':'invalid_open_images_subset'}
+   url_list=[f"https://open-images-dataset.s3.amazonaws.com/{subset}/{md['ImageID']}.jpg"]
+  else:
+   url_list=[md['OriginalURL'],md.get('Thumbnail300KURL')]
+  for url in dict.fromkeys(url_list):
    if not url:continue
    try:
     raw=fetch(url);orig=cv2.imdecode(np.frombuffer(raw,np.uint8),cv2.IMREAD_COLOR)
@@ -118,8 +135,18 @@ def main():
   return {'id':r['id'],'split':r['split'],'status':'download_or_alignment_failed','errors':errors}
  for start in range(0,len(chosen),1000):
   batch=chosen[start:start+1000];pairs=[(r,z.read('DMS_v1/'+r['label_path'])) for r in batch]
-  with concurrent.futures.ThreadPoolExecutor(max_workers=24) as pool:outcomes=list(pool.map(collect,pairs))
-  successful=[r for r in outcomes if r['status']=='verified_pair'];audit.extend(outcomes);rows.extend(successful)
+  with concurrent.futures.ThreadPoolExecutor(max_workers=8 if recovery else 24) as pool:outcomes=list(pool.map(collect,pairs))
+  successful=[]
+  for result in outcomes:
+   if result['status']!='verified_pair':
+    continue
+   if recovery:
+    h=int(result['phash63']);source_id=result['source_image_id']
+    if source_id in accepted_sources or oldph.match(h) is not None:
+     result['status']='excluded_duplicate_in_recovery';continue
+    oldph.add(h,result['id']);accepted_sources.add(source_id)
+   successful.append(result)
+  audit.extend(outcomes);rows.extend(successful)
   shard=Path(f'materials-dms-{start//1000+1:03d}.tar.gz')
   if successful:
    with tarfile.open(shard,'w:gz') as t:
@@ -144,7 +171,7 @@ def main():
  with (ROOT/'manifest.jsonl').open('w') as f:
   for r in rows:f.write(json.dumps(r)+'\n')
  counts={name:{split:sum(name in r['class_pixels'] and r['split']==split and (r['training_eligible'] or r['evaluation_eligible']) for r in rows) for split in ['train','validation','test']} for name in [names[i] for i in TARGETS]}
- summary={'source':'DMS v1, Upchurch and Niu, ECCV 2022','annotation_license':'CC-BY-NC-4.0; non-commercial research only','round_mode':'incremental train-only; fixed previous validation/test','prior_attempted':len(attempted),'remaining_unattempted_candidates':len(remaining)-len(selection),'source_annotations':len(data),'indoor_candidates':len(candidates),'selected_candidates':len(selection),'downloaded_verified_pairs':len(rows),'training_eligible':sum(r['training_eligible'] for r in rows),'evaluation_eligible':sum(r['evaluation_eligible'] for r in rows),'status_counts':dict(collections.Counter(r['status'] for r in audit)),'class_image_counts':counts,'shards':shards,'annotation_archive_sha256':EXPECTED,'limitations':['No accuracy guarantee; no training performed.','Scene indoor is a source classifier prediction, not human verification.','Paint/plaster/enamel is one label; polished stone is not necessarily marble.','No separate linoleum, laminate, gypsum board or panel class in this source.','Photo rights recorded from upstream metadata; not independently reverified per original page.','No building IDs; duplicates screened but building-level independence not established.','Masks retain original taxonomy; do not feed into existing 17-class model without explicit mapping.','Check eligibility flags; archives also contain pairs blocked from train/evaluation by cross-split deduplication.']}
+ summary={'source':'DMS v1, Upchurch and Niu, ECCV 2022','annotation_license':'CC-BY-NC-4.0; non-commercial research only','round_mode':('prior rate-limited DMS train candidates via official CVDF copies' if recovery else 'incremental train-only; fixed previous validation/test'),'prior_attempted':len(attempted),'remaining_unattempted_candidates':len(remaining)-len(selection),'source_annotations':len(data),'indoor_candidates':len(candidates),'selected_candidates':len(selection),'downloaded_verified_pairs':len(rows),'training_eligible':sum(r['training_eligible'] for r in rows),'evaluation_eligible':sum(r['evaluation_eligible'] for r in rows),'status_counts':dict(collections.Counter(r['status'] for r in audit)),'class_image_counts':counts,'shards':shards,'annotation_archive_sha256':EXPECTED,'limitations':['No accuracy guarantee; no training performed.','Scene indoor is a source classifier prediction, not human verification.','Paint/plaster/enamel is one label; polished stone is not necessarily marble.','No separate linoleum, laminate, gypsum board or panel class in this source.','Photo rights recorded from upstream metadata; not independently reverified per original page.','No building IDs; duplicates screened but building-level independence not established.','Masks retain original taxonomy; do not feed into existing 17-class model without explicit mapping.','Check eligibility flags; archives also contain pairs blocked from train/evaluation by cross-split deduplication.']}
  (ROOT/'collection-report.json').write_text(json.dumps(summary,indent=2))
  (ROOT/'ATTRIBUTION.md').write_text('DMS: Paul Upchurch and Ransen Niu. A Dense Material Segmentation Dataset for Indoor and Outdoor Scene Parsing. ECCV 2022. https://github.com/apple-aiml-research/ml-dms-dataset\nAnnotations: https://creativecommons.org/licenses/by-nc/4.0/\nPhoto author, original URL and CC-BY-2.0 evidence are recorded per image in manifest.jsonl. Images resized/re-encoded and sometimes rotated to match source masks; all changes recorded. No endorsement by original authors.\n')
  (ROOT/'SHA256SUMS').write_text(''.join(f"{x['sha256']}  {x['name']}\n" for x in shards)+''.join(f'{sha(p)}  {p.name}\n' for p in sorted(ROOT.iterdir()) if p.is_file() and p.name!='SHA256SUMS'))
