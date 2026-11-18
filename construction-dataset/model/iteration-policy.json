@@ -10,7 +10,7 @@
     "guaranteed": false
   },
   "state": {
-    "phase": "mixed_cpu_sharded_training",
+    "phase": "blocked_licensed_material_masks",
     "last_training_release": "interiors-trained-43726371232",
     "baseline_independent_test_miou": 0.27639755606651306,
     "gpu_finetuning_implemented": false,
@@ -18,7 +18,7 @@
     "last_collection_run": 43783496917,
     "last_collection_verified_train_pairs": 1188,
     "last_collection_excluded": 1602,
-    "last_checked_date": "2026-11-15",
+    "last_checked_date": "2026-11-18",
     "full_model_training_blocker": "No connected/verified GPU execution environment; local nvidia-smi command not found. Full GPU fine-tuning code remains unimplemented.",
     "known_training_eligible": 41047,
     "source_gap": "A further 8953 unique real indoor training photos with aligned, human-origin material masks and verified photo/annotation permissions are required. Previously reviewed sources cannot supply the verified shortfall.",
@@ -73,12 +73,50 @@
         "recording_scope": "One corridor video; adjacent frames require deduplication. Only carpet floor is an explicit target material.",
         "download_status": "Official file listing accessible; archive download returned HTTP 403 in current environment.",
         "new_training_photos_added": 0
+      },
+      "anyu": {
+        "source": "https://www.robots.ox.ac.uk/~szheng/aNYU/aNYU.tar.gz",
+        "archive_sha256": "a7721e7d20e7d9a5bf5e66c9c96211ae2b9be8d431ce18fa65ef5e3c111bafde",
+        "unique_jpg_by_sha256": 1449,
+        "human_attribute_masks": 15939,
+        "photo_dimensions": [
+          630,
+          460
+        ],
+        "mask_dimensions": [
+          620,
+          460
+        ],
+        "new_training_photos_added": 0,
+        "blocker": "Archive README requests citation and supplies no explicit redistribution grant for photos or masks. Source split, exact crop alignment, attribute class mapping and cross-corpus deduplication remain to be verified."
+      },
+      "rgbp_glass": {
+        "source": "https://mhaiyang.github.io/CVPR2022_PGSNet/",
+        "published_train_images": 3207,
+        "new_training_photos_added": 0,
+        "blocker": "Author application required for dataset access. Verify eligible indoor scenes and photo/mask terms after access."
+      },
+      "mcubes": {
+        "source": "https://github.com/kyotovision-public/multimodal-material-segmentation",
+        "new_training_photos_added": 0,
+        "blocker": "Road, pavement and sidewalk scenes, outside the interior scope."
+      },
+      "cis": {
+        "source": "https://github.com/XZ-YAN/CIS-Dataset",
+        "new_training_photos_added": 0,
+        "blocker": "Construction-site object instance masks for workers, machinery and precast components, without compatible interior surface material labels."
       }
     },
-    "active_training_run": 43932538925,
-    "active_training_mode": "4 independent frozen feature jobs, then 12 CPU epochs and fixed evaluation",
-    "active_training_train_photo_count": 41047,
-    "last_interrupted_training_run": 43836716472
+    "last_interrupted_training_run": 43836716472,
+    "last_completed_training": {
+      "run_id": 43932538925,
+      "release": "interiors-trained-43932538925",
+      "train_images": 41047,
+      "completed_epochs": 12,
+      "best_epoch": 0,
+      "selected_validation_miou": 0.28180795907974243,
+      "selected_fixed_test_miou": 0.28692424297332764
+    }
   },
   "collection": {
     "script": "construction-dataset/material-expansion/collect_next.py",
