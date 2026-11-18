@@ -1,0 +1,48 @@
+name: Verify material catalog coverage
+on:
+  push:
+    branches: [construction-dataset]
+    paths: ['.github/workflows/verify-material-catalog.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 44387269654
+          name: material-photo-mask-catalog
+          path: catalog
+      - name: Match coverage to class manifests and check example pairs
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json, hashlib
+          root = Path("catalog")
+          coverage = json.loads((root/"coverage.json").read_text())
+          for name, count in coverage["photos_with_class"].items():
+              ids = set()
+              for line in (root/(name+".jsonl")).open():
+                  row = json.loads(line)
+                  assert row["training_eligible"] and row["split"]=="train" and row["class_pixels"]>0
+                  ids.add(str(row["id"]))
+              assert len(ids)==count
+              folder = root/"photos"/name
+              examples = list(folder.glob("*.json"))
+              assert len(examples)==coverage["downloadable_example_pairs"][name]
+              for meta in examples:
+                  r=json.loads(meta.read_text())
+                  assert str(r["id"]) in ids
+                  for ext, field in [(".jpg","image_sha256"),(".png","mask_sha256")]:
+                      assert hashlib.sha256(meta.with_suffix(ext).read_bytes()).hexdigest()==r[field]
+          print("VERIFIED_COVERAGE",json.dumps(coverage))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-material-coverage
+          path: catalog/coverage.json
