@@ -113,11 +113,15 @@ def main():
  parser.add_argument('--resume-dms',action='store_true',help='Start from the previous DMS material checkpoint on an expanded train split.')
  parser.add_argument('--mixed-policy',type=Path,help='Stream the verified corpus from the releases in this policy.')
  parser.add_argument('--epochs',type=int,default=20)
+ parser.add_argument('--learning-rate',type=float,default=0.0002)
+ parser.add_argument('--selection-metric',choices=('validation_loss','validation_miou'),default='validation_loss')
  mode=parser.add_mutually_exclusive_group()
  mode.add_argument('--feature-shard',type=int,nargs=2,metavar=('INDEX','COUNT'))
  mode.add_argument('--cached-shards',type=Path)
  args=parser.parse_args()
  if args.epochs<1:parser.error('--epochs must be positive')
+ if not 0 < args.learning_rate < float('inf'):
+  parser.error('--learning-rate must be positive and finite')
  if (args.feature_shard or args.cached_shards) and not args.mixed_policy:
   parser.error('Feature shard modes require --mixed-policy')
  shard_index,shard_count=args.feature_shard or (0,1)
@@ -219,8 +223,12 @@ def main():
     if source in old_config['material_labels']:
      j=LABELS.index(dest);k=old_config['material_labels'].index(source);head.linear.weight[j].copy_(old['material.weight'][k,:,0,0]);head.linear.bias[j].copy_(old['material.bias'][k]);copied.append({'new_label':dest,'initialized_from':source})
  weights=np.zeros(len(LABELS),np.float32);present=hist>0;weights[present]=np.sqrt(np.median(hist[present])/hist[present]);weights[present]=np.clip(weights[present],.25,4);weight=torch.from_numpy(weights)
- initial=evaluate(head,cached(paths['validation']));best=initial['loss'];best_epoch=0;save_file(head.state_dict(),str(OUT/'material-head.safetensors'))
- history=[];optimizer=torch.optim.AdamW(head.parameters(),lr=.0002,weight_decay=.01);visited=set();steps=0;epochs=args.epochs
+ def selection_score(metrics):
+  if args.selection_metric=='validation_miou':
+   return metrics['material']['miou']
+  return -metrics['loss']
+ initial=evaluate(head,cached(paths['validation']));best=selection_score(initial);best_epoch=0;save_file(head.state_dict(),str(OUT/'material-head.safetensors'))
+ history=[];optimizer=torch.optim.AdamW(head.parameters(),lr=args.learning_rate,weight_decay=.01);visited=set();steps=0;epochs=args.epochs
  for epoch in range(1,epochs+1):
   head.train();random.shuffle(paths['train']);losses=[]
   for path in paths['train']:
@@ -228,7 +236,8 @@ def main():
    optimizer.zero_grad(set_to_none=True);loss=F.cross_entropy(head(x),y,weight=weight);assert torch.isfinite(loss)
    loss.backward();nn.utils.clip_grad_norm_(head.parameters(),1);optimizer.step();losses.append(loss.item());visited.add(id_for_path[str(path)]);steps+=1
   metrics=evaluate(head,cached(paths['validation']));record={'epoch':epoch,'train_loss':float(np.mean(losses)),'validation':metrics};history.append(record)
-  if metrics['loss']<best:best=metrics['loss'];best_epoch=epoch;save_file(head.state_dict(),str(OUT/'material-head.safetensors'))
+  score=selection_score(metrics)
+  if score>best:best=score;best_epoch=epoch;save_file(head.state_dict(),str(OUT/'material-head.safetensors'))
   save_file(head.state_dict(),str(OUT/'last-material-head.safetensors'));torch.save({'optimizer':optimizer.state_dict(),'epoch':epoch},OUT/'optimizer-state.pt')
   (OUT/'history.json').write_text(json.dumps(history,indent=2));plot(history);print('EPOCH',json.dumps(record),flush=True)
  assert len(visited)==len(paths['train']);head.load_state_dict(load_file(str(OUT/'material-head.safetensors')));head.eval();final=evaluate(head,cached(paths['validation']))
@@ -259,6 +268,8 @@ def main():
  config={'architecture':'linear + LayerNorm/Linear256x128/GELU/Dropout0.1/Linear128x22 residual; frozen Mask2Former pixel features','base_revision':old_config['base_revision'],'base_weight_sha256':old_config['base_weight_sha256'],'material_labels':LABELS,'dms_ids':IDS,'ignored_dms_ids':sorted(IGNORE),'other_index':len(LABELS)-1,'input_size':[256,256],'evaluation_grid':[64,64],'initialization':copied,'parent_release':parent_release,'use_restriction':'research only; DMS annotations CC-BY-NC-4.0'}
  (OUT/'adapter_config.json').write_text(json.dumps(config,indent=2));(OUT/'coverage.json').write_text(json.dumps({'excluded':excluded,'train_ids_seen':sorted(visited,key=str),'source_counts':{s:len(rs) for s,rs in groups.items()}},indent=2))
  report={'status':'completed','stage':'DMS nonlinear material head transfer learning; backbone frozen; previous surface branch retained unchanged','parent_release':parent_release,'data_release':data_releases[0],'data_releases':data_releases,'train_images':len(paths['train']),'validation_images':len(paths['validation']),'test_images':len(groups['test'])-sum(r['split']=='test' for r in excluded),'epochs':epochs,'best_epoch':best_epoch,'optimizer_steps':steps,'unique_training_images_seen':len(visited),'trainable_parameters':sum(p.numel() for p in head.parameters()),'initial_validation':initial,'best_validation':final,'independent_test':test,'per_class_90_percent_reached':all(v['iou'] is not None and v['iou']>=.9 for k,v in test['material']['classes'].items() if k!='other_labeled_content'),'limitations':['No 90% guarantee; compare against initial result on this same label set, not prior pilot.','21 target material labels plus other content; no separate linoleum or plaster classifier.','IoU on annotated 64x64 pixels; not full-resolution all-photo accuracy.','Backbone frozen; not full-network fine-tuning.','Class-weighted train loss and unweighted validation loss are not directly comparable.','Source-predicted interior scenes; no building-level split guarantee.','Research-only annotations; base checkpoint license other; photo rights from source metadata.','Some classes initialized from narrower/broader old classes only as a starting point, not relabeled ground truth.']}
+ report['learning_rate']=args.learning_rate
+ report['selection_metric']=args.selection_metric
  if args.mixed_policy:
   report['stage']='Mixed-source nonlinear material head transfer learning; backbone frozen'
   report['train_pixel_sample_cap']=limit
