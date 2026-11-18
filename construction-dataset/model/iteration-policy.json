@@ -116,7 +116,10 @@
       "best_epoch": 0,
       "selected_validation_miou": 0.28180795907974243,
       "selected_fixed_test_miou": 0.28692424297332764
-    }
+    },
+    "active_training_run": 44258922982,
+    "active_training_mode": "CPU frozen features; learning rate 0.00002; selection by validation mIoU; no new data admitted",
+    "active_training_train_photo_count": 41047
   },
   "collection": {
     "script": "construction-dataset/material-expansion/collect_next.py",
