@@ -1,0 +1,45 @@
+name: Verify published brick photo-mask manifest
+on:
+  push:
+    branches: [construction-dataset]
+    paths: ['.github/workflows/verify-brick-archive.yml']
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 44368685657
+          name: verified-brick-training-pairs
+          path: pairs
+      - name: Verify every manifest entry against the published bytes
+        run: |
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          base = Path("pairs")
+          rows = [json.loads(line) for line in (base / "manifest.jsonl").read_text().splitlines()]
+          names = {"manifest.jsonl"}
+          ids = set()
+          for row in rows:
+              key = str(row["id"])
+              assert key not in ids and row["training_eligible"] and row["split"] == "train"
+              ids.add(key)
+              for field, digest_field in [("collected_photo", "image_sha256"), ("collected_mask", "mask_sha256")]:
+                  name = row[field]
+                  assert Path(name).name == name and name not in names
+                  names.add(name)
+                  assert hashlib.sha256((base / name).read_bytes()).hexdigest() == row[digest_field]
+          assert {p.name for p in base.iterdir()} == names and len(ids) == 1212
+          print("VERIFIED_MANIFEST", len(ids), "pairs", len(names), "files")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-brick-manifest
+          path: pairs/manifest.jsonl
