@@ -1,0 +1,176 @@
+name: Collect material-specific photos and train independent segmentation heads
+on:
+  push:
+    branches: [construction-dataset]
+    paths: ['.github/workflows/material-by-class.yml']
+  workflow_dispatch:
+concurrency:
+  group: by-class-training-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: write
+env:
+  # Reuse the four partitions from the same data, encoder and pixel sampling settings.
+  FEATURE_CACHE_RUN_ID: '43932538925'
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install transformers==4.57.1 pillow==13.0.0 scipy==1.16.3
+      - run: python -u construction-dataset/model/material_by_class.py index
+      - uses: actions/upload-artifact@v4
+        with:
+          name: material-photo-mask-catalog
+          path: material-index/
+          compression-level: 1
+  candidates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pillow==13.0.0
+      - run: python -u construction-dataset/material-expansion/commons_materials.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: new-material-candidates
+          path: new-photo-candidates/
+          compression-level: 0
+  features:
+    name: Extract features (part ${{ matrix.part }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 230
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0, 1, 2, 3]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install CPU training dependencies
+        run: |
+          python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install transformers==4.57.1 pillow==13.0.0 scipy==1.16.3 matplotlib==3.10.7
+      - name: Prepare disk space for frozen feature cache
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h .
+      - name: Download verified baseline and best saved material head
+        run: |
+          PARENT_RELEASE=interiors-trained-44258922982
+          gh release download "$PARENT_RELEASE" --pattern interiors-dms-heads.tar.gz --dir /tmp/material-resume
+          gh release download interiors-model-43633804001 --pattern mask2former-interiors-baseline.tar.gz --dir /tmp/material-base
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          import tarfile
+          with tarfile.open("/tmp/material-resume/interiors-dms-heads.tar.gz") as archive:
+              archive.extractall("/tmp/material-resume", filter="data")
+          shutil.move("/tmp/material-resume/trained-dms", "resume")
+          with tarfile.open("/tmp/material-base/mask2former-interiors-baseline.tar.gz") as archive:
+              archive.extractall(".", filter="data")
+          PY
+          (cd resume && sha256sum -c SHA256SUMS)
+          (cd model-package && sha256sum -c SHA256SUMS)
+          mkdir previous
+          cp resume/previous-heads.safetensors previous/heads.safetensors
+          cp resume/previous-adapter-config.json previous/adapter_config.json
+      - uses: actions/cache/restore@v4
+        id: restore
+        with:
+          path: feature-cache/frozen-features-${{ matrix.part }}
+          key: material-features-${{ env.FEATURE_CACHE_RUN_ID }}-${{ matrix.part }}
+      - name: Extract and checkpoint this archive partition
+        if: steps.restore.outputs.cache-hit != 'true'
+        run: |
+          python -u construction-dataset/model/train_dms.py --resume-dms \
+            --mixed-policy construction-dataset/model/iteration-policy.json \
+            --feature-shard "${{ matrix.part }}" 4
+          mkdir -p feature-cache
+          mv dms-cache "feature-cache/frozen-features-${{ matrix.part }}"
+      - uses: actions/cache/save@v4
+        if: steps.restore.outputs.cache-hit != 'true'
+        with:
+          path: feature-cache/frozen-features-${{ matrix.part }}
+          key: material-features-${{ env.FEATURE_CACHE_RUN_ID }}-${{ matrix.part }}
+  train:
+    name: Train on all verified feature partitions
+    needs: [features, index]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install CPU training dependencies
+        run: |
+          python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install transformers==4.57.1 pillow==13.0.0 scipy==1.16.3 matplotlib==3.10.7
+      - name: Prepare disk space for frozen feature cache
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h .
+      - name: Download verified baseline and best saved material head
+        run: |
+          PARENT_RELEASE=interiors-trained-44258922982
+          gh release download "$PARENT_RELEASE" --pattern interiors-dms-heads.tar.gz --dir /tmp/material-resume
+          gh release download interiors-model-43633804001 --pattern mask2former-interiors-baseline.tar.gz --dir /tmp/material-base
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          import tarfile
+          with tarfile.open("/tmp/material-resume/interiors-dms-heads.tar.gz") as archive:
+              archive.extractall("/tmp/material-resume", filter="data")
+          shutil.move("/tmp/material-resume/trained-dms", "resume")
+          with tarfile.open("/tmp/material-base/mask2former-interiors-baseline.tar.gz") as archive:
+              archive.extractall(".", filter="data")
+          PY
+          (cd resume && sha256sum -c SHA256SUMS)
+          (cd model-package && sha256sum -c SHA256SUMS)
+          mkdir previous
+          cp resume/previous-heads.safetensors previous/heads.safetensors
+          cp resume/previous-adapter-config.json previous/adapter_config.json
+      - uses: actions/cache/restore@v4
+        with:
+          path: feature-cache/frozen-features-0
+          key: material-features-${{ env.FEATURE_CACHE_RUN_ID }}-0
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v4
+        with:
+          path: feature-cache/frozen-features-1
+          key: material-features-${{ env.FEATURE_CACHE_RUN_ID }}-1
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v4
+        with:
+          path: feature-cache/frozen-features-2
+          key: material-features-${{ env.FEATURE_CACHE_RUN_ID }}-2
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v4
+        with:
+          path: feature-cache/frozen-features-3
+          key: material-features-${{ env.FEATURE_CACHE_RUN_ID }}-3
+          fail-on-cache-miss: true
+      - name: Train independent material heads
+        run: python -u construction-dataset/model/material_by_class.py train
+      - uses: actions/upload-artifact@v4
+        with:
+          name: material-specialist-results
+          path: material-train/
