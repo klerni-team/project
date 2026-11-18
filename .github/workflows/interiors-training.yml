@@ -9,6 +9,9 @@ concurrency:
   cancel-in-progress: false
 permissions:
   contents: write
+env:
+  # Reuse the four partitions from the same data, encoder and pixel sampling settings.
+  FEATURE_CACHE_RUN_ID: '43932538925'
 jobs:
   features:
     name: Extract features (part ${{ matrix.part }})
@@ -57,7 +60,7 @@ jobs:
         id: restore
         with:
           path: feature-cache/frozen-features-${{ matrix.part }}
-          key: material-features-${{ github.run_id }}-${{ matrix.part }}
+          key: material-features-${{ env.FEATURE_CACHE_RUN_ID }}-${{ matrix.part }}
       - name: Extract and checkpoint this archive partition
         if: steps.restore.outputs.cache-hit != 'true'
         run: |
@@ -70,7 +73,7 @@ jobs:
         if: steps.restore.outputs.cache-hit != 'true'
         with:
           path: feature-cache/frozen-features-${{ matrix.part }}
-          key: material-features-${{ github.run_id }}-${{ matrix.part }}
+          key: material-features-${{ env.FEATURE_CACHE_RUN_ID }}-${{ matrix.part }}
   train:
     name: Train on all verified feature partitions
     needs: features
@@ -114,26 +117,27 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: feature-cache/frozen-features-0
-          key: material-features-${{ github.run_id }}-0
+          key: material-features-${{ env.FEATURE_CACHE_RUN_ID }}-0
           fail-on-cache-miss: true
       - uses: actions/cache/restore@v4
         with:
           path: feature-cache/frozen-features-1
-          key: material-features-${{ github.run_id }}-1
+          key: material-features-${{ env.FEATURE_CACHE_RUN_ID }}-1
           fail-on-cache-miss: true
       - uses: actions/cache/restore@v4
         with:
           path: feature-cache/frozen-features-2
-          key: material-features-${{ github.run_id }}-2
+          key: material-features-${{ env.FEATURE_CACHE_RUN_ID }}-2
           fail-on-cache-miss: true
       - uses: actions/cache/restore@v4
         with:
           path: feature-cache/frozen-features-3
-          key: material-features-${{ github.run_id }}-3
+          key: material-features-${{ env.FEATURE_CACHE_RUN_ID }}-3
           fail-on-cache-miss: true
       - name: Fit the material head and evaluate the fixed benchmark
         run: |
           python -u construction-dataset/model/train_dms.py --resume-dms --epochs 12 \
+            --learning-rate 0.00002 --selection-metric validation_miou \
             --mixed-policy construction-dataset/model/iteration-policy.json \
             --cached-shards feature-cache
       - name: Preserve training reports and checkpoints
