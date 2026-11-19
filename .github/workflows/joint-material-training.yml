@@ -1,0 +1,81 @@
+name: Joint pixel decoder and material head
+on:
+  push:
+    branches: [construction-dataset]
+    paths: ['.github/workflows/joint-material-training.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: joint-material-training-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  baseline:
+    uses: ./.github/workflows/joint-material-stage.yml
+    with:
+      stage: -1
+      output_name: joint-baseline
+  partition0:
+    needs: baseline
+    uses: ./.github/workflows/joint-material-stage.yml
+    with:
+      stage: 0
+      output_name: joint-partition0
+      predecessor: joint-baseline
+  partition1:
+    needs: partition0
+    uses: ./.github/workflows/joint-material-stage.yml
+    with:
+      stage: 1
+      output_name: joint-partition1
+      predecessor: joint-partition0
+  partition2:
+    needs: partition1
+    uses: ./.github/workflows/joint-material-stage.yml
+    with:
+      stage: 2
+      output_name: joint-partition2
+      predecessor: joint-partition1
+  partition3:
+    needs: partition2
+    uses: ./.github/workflows/joint-material-stage.yml
+    with:
+      stage: 3
+      output_name: joint-partition3
+      predecessor: joint-partition2
+  partition4:
+    needs: partition3
+    uses: ./.github/workflows/joint-material-stage.yml
+    with:
+      stage: 4
+      output_name: joint-partition4
+      predecessor: joint-partition3
+  partition5:
+    needs: partition4
+    uses: ./.github/workflows/joint-material-stage.yml
+    with:
+      stage: 5
+      output_name: joint-partition5
+      predecessor: joint-partition4
+  partition6:
+    needs: partition5
+    uses: ./.github/workflows/joint-material-stage.yml
+    with:
+      stage: 6
+      output_name: joint-partition6
+      predecessor: joint-partition5
+  partition7:
+    needs: partition6
+    uses: ./.github/workflows/joint-material-stage.yml
+    with:
+      stage: 7
+      output_name: joint-partition7
+      predecessor: joint-partition6
+  evaluate:
+    needs: partition7
+    uses: ./.github/workflows/joint-material-stage.yml
+    with:
+      stage: 8
+      output_name: joint-material-results
+      predecessor: joint-partition7
