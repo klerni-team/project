@@ -1,0 +1,35 @@
+name: Audit material masks before next training cycle
+on:
+  push:
+    branches: [construction-dataset]
+    paths: ['.github/workflows/material-mask-review.yml']
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: '44729005609'
+          name: frozen-head-10k-results
+          path: pilot
+      - run: |
+          python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install transformers==4.57.1 pillow==13.0.0 scipy==1.16.3
+      - run: python -u construction-dataset/model/audit_material_masks.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: material-mask-review
+          path: material-review/
+          if-no-files-found: error
