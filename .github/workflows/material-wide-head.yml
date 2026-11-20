@@ -1,0 +1,54 @@
+name: Compare frozen material heads on 10000 photos
+on:
+  push:
+    branches: [construction-dataset]
+    paths: ['.github/workflows/material-wide-head.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: material-wide-head
+  cancel-in-progress: false
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install CPU training dependencies
+        run: |
+          python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install transformers==4.57.1 pillow==13.0.0 scipy==1.16.3 matplotlib==3.10.7
+      - name: Prepare disk space for frozen feature cache
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h .
+      - name: Download verified baseline and best saved material head
+        run: |
+          PARENT_RELEASE=interiors-trained-44258922982
+          gh release download "$PARENT_RELEASE" --pattern interiors-dms-heads.tar.gz --dir /tmp/material-resume
+          gh release download interiors-model-43633804001 --pattern mask2former-interiors-baseline.tar.gz --dir /tmp/material-base
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          import tarfile
+          with tarfile.open("/tmp/material-resume/interiors-dms-heads.tar.gz") as archive:
+              archive.extractall("/tmp/material-resume", filter="data")
+          shutil.move("/tmp/material-resume/trained-dms", "resume")
+          with tarfile.open("/tmp/material-base/mask2former-interiors-baseline.tar.gz") as archive:
+              archive.extractall(".", filter="data")
+          PY
+          (cd resume && sha256sum -c SHA256SUMS)
+          (cd model-package && sha256sum -c SHA256SUMS)
+      - name: Run paired frozen-head experiment
+        run: python -u construction-dataset/model/train_wide_head.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frozen-head-10k-results
+          path: head-pilot/
+          if-no-files-found: error
